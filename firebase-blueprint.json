@@ -1,0 +1,132 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Product in the catalog",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique product ID" },
+        "ean": { "type": "string", "description": "Barcode" },
+        "description": { "type": "string", "description": "Product description" },
+        "stock": { "type": "number", "description": "Current stock quantity" },
+        "salePrice": { "type": "number", "description": "Original sale price" },
+        "discount": { "type": "number", "description": "Discount percentage" },
+        "finalPrice": { "type": "number", "description": "Price after discount" },
+        "category": { "type": "string", "description": "Product category" },
+        "manufacturer": { "type": "string", "description": "Product manufacturer" },
+        "photo": { "type": "string", "description": "URL to product photo" },
+        "type": { "type": "string", "enum": ["normal", "offer", "new"], "description": "Product listing type" }
+      },
+      "required": ["id", "description", "finalPrice"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Customer information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique client ID" },
+        "name": { "type": "string", "description": "Full name" },
+        "tradeName": { "type": "string", "description": "Trade name (Nome Fantasia)" },
+        "cnpj": { "type": "string", "description": "CNPJ tax ID" },
+        "seller": { "type": "string", "description": "Assigned seller name" },
+        "email": { "type": "string", "format": "email", "description": "Contact email" },
+        "address": { "type": "string", "description": "Full address" },
+        "city": { "type": "string", "description": "City" },
+        "state": { "type": "string", "description": "State" },
+        "buyer": { "type": "string", "description": "Buyer name" },
+        "phone": { "type": "string", "description": "Contact phone" },
+        "regional": { "type": "string", "description": "Regional office" }
+      },
+      "required": ["id", "name"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Sales order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Order ID" },
+        "date": { "type": "string", "format": "date-time", "description": "Order date" },
+        "clientId": { "type": "string", "description": "Reference to client" },
+        "clientName": { "type": "string", "description": "Client name at time of order" },
+        "email": { "type": "string", "description": "Client email" },
+        "seller": { "type": "string", "description": "Seller name" },
+        "phone": { "type": "string", "description": "Contact phone" },
+        "total": { "type": "number", "description": "Total order value" },
+        "status": { "type": "string", "enum": ["Novo", "Confirmado", "Entregue", "Cancelado", "Rascunho"], "description": "Order status" },
+        "items": { "type": "array", "items": { "type": "object" }, "description": "Ordered items" },
+        "observation": { "type": "string", "description": "Order notes" },
+        "pdfUrl": { "type": "string", "description": "URL to generated PDF" }
+      },
+      "required": ["id", "clientId", "total", "status"]
+    },
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Extended user information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "name": { "type": "string", "description": "Full name" },
+        "role": { "type": "string", "enum": ["admin", "vendedor", "promotor"], "description": "User role" },
+        "phone": { "type": "string", "description": "Contact phone" },
+        "email": { "type": "string", "format": "email", "description": "Email" },
+        "regional": { "type": "string", "description": "Regional office" }
+      },
+      "required": ["uid", "role"]
+    },
+    "Favorite": {
+      "title": "Favorite",
+      "description": "Customer favorite product",
+      "type": "object",
+      "properties": {
+        "clientId": { "type": "string", "description": "Client ID" },
+        "productId": { "type": "string", "description": "Product ID" },
+        "description": { "type": "string", "description": "Product description" },
+        "addedBy": { "type": "string", "description": "User who added" },
+        "dateAdded": { "type": "string", "format": "date-time", "description": "Date added" }
+      },
+      "required": ["clientId", "productId"]
+    },
+    "Visit": {
+      "title": "Visit",
+      "description": "Geolocation visit record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Client ID" },
+        "name": { "type": "string", "description": "Client name" },
+        "cnpj": { "type": "string", "description": "CNPJ" },
+        "address": { "type": "string", "description": "Address" },
+        "city": { "type": "string", "description": "City" },
+        "state": { "type": "string", "description": "State" },
+        "timestamp": { "type": "number", "description": "Unix timestamp" },
+        "seller": { "type": "string", "description": "Seller name" }
+      },
+      "required": ["id", "timestamp", "seller"]
+    }
+  },
+  "firestore": {
+    "products": {
+      "schema": "Product",
+      "description": "Catalog products"
+    },
+    "clients": {
+      "schema": "Client",
+      "description": "Customer database"
+    },
+    "orders": {
+      "schema": "Order",
+      "description": "Sales orders"
+    },
+    "users": {
+      "schema": "UserProfile",
+      "description": "User profiles"
+    },
+    "favorites": {
+      "schema": "Favorite",
+      "description": "Customer favorite products"
+    },
+    "visits": {
+      "schema": "Visit",
+      "description": "Seller visit history"
+    }
+  }
+}

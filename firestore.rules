@@ -1,0 +1,116 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields: uid, name, role, phone, email, regional
+    //
+    // Collection: products
+    // Fields: id, ean, description, stock, salePrice, discount, finalPrice, category, manufacturer, photo, type
+    //
+    // Collection: clients
+    // Fields: id, name, tradeName, cnpj, seller, email, address, city, state, buyer, phone, regional
+    //
+    // Collection: orders
+    // Fields: id, date, clientId, clientName, email, seller, phone, total, status, items, observation, pdfUrl
+    //
+    // Collection: favorites
+    // Fields: clientId, productId, description, addedBy, dateAdded
+    //
+    // Collection: visits
+    // Fields: id, name, cnpj, address, city, state, timestamp, seller
+    //
+    // Collection: banners
+    // Fields: id, title, subtitle, image, targetRegional, type, active
+    //
+    // Collection: carts
+    // Fields: items, updatedAt
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((request.auth.token.email == "leonelamorimm@gmail.com" && request.auth.token.email_verified == true) ||
+         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.uid is string && data.role in ['admin', 'vendedor', 'promotor'];
+    }
+
+    function isValidProduct(data) {
+      return data.id is string && data.description is string && data.finalPrice is number;
+    }
+
+    function isValidOrder(data) {
+      return data.id is string && data.clientId is string && data.total is number && data.status in ["Novo", "Confirmado", "Entregue", "Cancelado", "Rascunho"];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /carts/{cartId} {
+      allow read, write: if true;
+    }
+
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    match /products/{productId} {
+      allow read, write: if true;
+    }
+
+    match /clients/{clientId} {
+      allow read, write: if true;
+    }
+
+    match /orders/{orderId} {
+      allow read, write: if true;
+    }
+
+    match /favorites/{favId} {
+      allow read, write: if true;
+    }
+
+    match /visits/{visitId} {
+      allow read, write: if true;
+    }
+
+    match /banners/{bannerId} {
+      allow read, write: if true;
+    }
+
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
