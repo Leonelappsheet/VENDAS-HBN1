@@ -1,116 +1,75 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // ===============================================================
-    // Assumed Data Model
-    // ===============================================================
-    //
-    // Collection: users
-    // Fields: uid, name, role, phone, email, regional
-    //
-    // Collection: products
-    // Fields: id, ean, description, stock, salePrice, discount, finalPrice, category, manufacturer, photo, type
-    //
-    // Collection: clients
-    // Fields: id, name, tradeName, cnpj, seller, email, address, city, state, buyer, phone, regional
-    //
-    // Collection: orders
-    // Fields: id, date, clientId, clientName, email, seller, phone, total, status, items, observation, pdfUrl
-    //
-    // Collection: favorites
-    // Fields: clientId, productId, description, addedBy, dateAdded
-    //
-    // Collection: visits
-    // Fields: id, name, cnpj, address, city, state, timestamp, seller
-    //
-    // Collection: banners
-    // Fields: id, title, subtitle, image, targetRegional, type, active
-    //
-    // Collection: carts
-    // Fields: items, updatedAt
-    //
-    // ===============================================================
+    
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
 
-    // ===============================================================
-    // Helper Functions
-    // ===============================================================
-    function isAuthenticated() {
+    // Helper functions
+    function isSignedIn() {
       return request.auth != null;
     }
 
-    function isAdmin() {
-      return isAuthenticated() &&
-        ((request.auth.token.email == "leonelamorimm@gmail.com" && request.auth.token.email_verified == true) ||
-         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'));
-    }
-
     function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+      return isSignedIn() && request.auth.uid == userId;
     }
 
-    function hasOnlyAllowedFields(fields) {
-      return request.resource.data.keys().hasOnly(fields);
+    function isAdmin() {
+      return isSignedIn() && 
+        (request.auth.token.email == "leonelamorimm@gmail.com" && request.auth.token.email_verified == true);
     }
 
-    function isValidEmail(email) {
-      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    function isSeller(sellerName) {
+      // Logic for verifying seller could involve checking user record
+      return isSignedIn();
     }
 
-    // ===============================================================
-    // Domain Validators
-    // ===============================================================
-
-    function isValidUser(data) {
-      return data.uid is string && data.role in ['admin', 'vendedor', 'promotor'];
-    }
-
-    function isValidProduct(data) {
-      return data.id is string && data.description is string && data.finalPrice is number;
-    }
-
-    function isValidOrder(data) {
-      return data.id is string && data.clientId is string && data.total is number && data.status in ["Novo", "Confirmado", "Entregue", "Cancelado", "Rascunho"];
-    }
-
-    // ===============================================================
-    // Rules
-    // ===============================================================
-
-    match /carts/{cartId} {
-      allow read, write: if true;
-    }
+    // --- Rules ---
 
     match /users/{userId} {
-      allow read, write: if true;
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isOwner(userId) || isAdmin();
     }
 
     match /products/{productId} {
-      allow read, write: if true;
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
 
     match /clients/{clientId} {
-      allow read, write: if true;
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
 
     match /orders/{orderId} {
-      allow read, write: if true;
+      // Owners can see their orders, admins see all
+      allow read: if isSignedIn() && (resource.data.email == request.auth.token.email || isAdmin());
+      // Only authenticated users can place orders
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
     }
 
     match /favorites/{favId} {
-      allow read, write: if true;
+      // key is usually {userId}_{productId}
+      allow read, write: if isSignedIn() && (favId.startsWith(request.auth.uid) || isAdmin());
     }
 
     match /visits/{visitId} {
-      allow read, write: if true;
+      allow read: if isSignedIn() && (resource.data.seller == request.auth.token.email || isAdmin());
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
     }
 
     match /banners/{bannerId} {
-      allow read, write: if true;
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
 
-    match /{path=**} {
-      allow read, write: if false;
+    match /carts/{clientId} {
+      // Carts are keyed by clientId or userId
+      allow read, write: if isSignedIn();
     }
   }
 }

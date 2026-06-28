@@ -1,5 +1,6 @@
 {
   "name": "VENDAS HBN1",
   "description": "Sistema de gestão de vendas para Higiene & Beleza, com catálogo de produtos, suporte offline, histórico de pedidos e painel administrativo.",
-  "requestFramePermissions": ["geolocation", "camera"]
+  "requestFramePermissions": ["geolocation", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

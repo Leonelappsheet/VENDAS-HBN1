@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <path id="starPoint" d="M 50,5 L 62,35 L 50,28 L 38,35 Z" fill="#FF8C00" />
+  </defs>
+  <use href="#starPoint" />
+  <use href="#starPoint" transform="rotate(72 50 50)" />
+  <use href="#starPoint" transform="rotate(144 50 50)" />
+  <use href="#starPoint" transform="rotate(216 50 50)" />
+  <use href="#starPoint" transform="rotate(288 50 50)" />
+</svg>

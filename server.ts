@@ -1,30 +1,103 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
-import { google } from "googleapis";
+import { fileURLToPath } from 'url';
+import axios from "axios";
+import crypto from "crypto";
 import cors from "cors";
 import dotenv from "dotenv";
 
 dotenv.config();
 
 const app = express();
+const apiRouter = express.Router();
 const PORT = 3000;
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-const DEFAULT_SPREADSHEET_ID = cleanSpreadsheetId(process.env.GOOGLE_SHEET_ID || "1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs");
+// Request logging middleware
+app.use((req, res, next) => {
+  const isCodeAsset = req.path.startsWith('/src/') || 
+                      req.path.startsWith('/@') || 
+                      req.path.startsWith('/node_modules/') ||
+                      req.path.endsWith('.ts') || 
+                      req.path.endsWith('.tsx') || 
+                      req.path.endsWith('.css') || 
+                      req.path.endsWith('.js') || 
+                      req.path.endsWith('.map');
+
+  if (!isCodeAsset) {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} - (Path: ${req.path})`);
+  }
+  next();
+});
+
+const getInitialSpreadsheetId = () => {
+  const envSheetId = (process.env.GOOGLE_SHEET_ID || "").trim();
+  const envIdDaPlanilha = (process.env.ID_da_planilha || "").trim();
+  
+  if (envSheetId && !envSheetId.startsWith("AIza")) {
+    return cleanSpreadsheetId(envSheetId);
+  }
+  if (envIdDaPlanilha) {
+    return cleanSpreadsheetId(envIdDaPlanilha);
+  }
+  return "1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs";
+};
+
+const DEFAULT_SPREADSHEET_ID = getInitialSpreadsheetId();
 
 const getRequestSpreadsheetId = (req: express.Request) => {
   const headerId = req.headers['x-spreadsheet-id'] as string || req.query.spreadsheetId as string;
-  if (headerId) return headerId;
+  
+  const defaultTimon = '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs';
+  const defaultThe = '1I79E8X9b8O-g1wIc5fsKuO2DW9GCU24uZFkpTEQAcEk';
+  const defaultImp = '1z2a_wzBrVPUEk8RrTEsIV9MsV9XBZQd9eZM6AwMwVyE';
 
+  const envSheetId = (process.env.GOOGLE_SHEET_ID || "").trim();
+  const envIdDaPlanilha = (process.env.ID_da_planilha || "").trim();
+  const activeMainSheet = envSheetId || envIdDaPlanilha;
+
+  const envTimon = (process.env.GOOGLE_SHEET_ID_TIMON || "").trim();
+  const envThe = (process.env.GOOGLE_SHEET_ID_THE || "").trim();
+  const envImp = (process.env.GOOGLE_SHEET_ID_IMP || "").trim();
+
+  if (headerId) {
+    const trimmedHeader = headerId.trim();
+    if (trimmedHeader === defaultTimon) {
+      if (envTimon) return cleanSpreadsheetId(envTimon);
+      if (activeMainSheet) return cleanSpreadsheetId(activeMainSheet);
+    } else if (trimmedHeader === defaultThe) {
+      if (envThe) return cleanSpreadsheetId(envThe);
+      if (activeMainSheet) return cleanSpreadsheetId(activeMainSheet);
+    } else if (trimmedHeader === defaultImp) {
+      if (envImp) return cleanSpreadsheetId(envImp);
+      if (activeMainSheet) return cleanSpreadsheetId(activeMainSheet);
+    }
+    return trimmedHeader;
+  }
   return DEFAULT_SPREADSHEET_ID;
 };
 
-// API Routes
-app.post("/api/product/update-image", async (req, res) => {
+function normalizeEAN(ean: any): string {
+  if (ean === null || ean === undefined) return '';
+  let s = String(ean).trim().replace(/[^0-9]/g, '');
+  if (!s) return '';
+  if (s.length > 0 && s.length < 13) {
+    s = s.padStart(13, '0');
+  }
+  return s;
+}
+
+// Admin check helper
+const isAdmin = (email: string) => {
+  const admins = ["leonelamorimm@gmail.com"];
+  return admins.includes(email);
+};
+
+// API Routes on apiRouter
+apiRouter.post("/product/update-image", async (req, res) => {
   try {
     const { id, imageUrl, sheetName } = req.body;
     const spreadsheetId = getRequestSpreadsheetId(req);
@@ -122,7 +195,25 @@ async function getSheetsClient() {
 
   let authJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
   if (!authJson) {
-    throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON environment variable is required. Please set it in the Secrets panel.");
+    throw new Error(
+      "A variável de ambiente GOOGLE_SERVICE_ACCOUNT_JSON não está configurada. " +
+      "Se você estiver no Netlify, adicione esta variável em 'Site Configuration' -> 'Environment variables' " +
+      "com o conteúdo completo do seu arquivo JSON de Conta de Serviço Google Cloud. " +
+      "Dica: Para evitar erros de formatação com quebras de linha no Netlify, você pode codificar o JSON em Base64 e salvar a string única gerada!"
+    );
+  }
+
+  // Handle Base64-encoded JSON strings (very common in automated deployments like Netlify/Vercel)
+  if (authJson && !authJson.startsWith('{') && !authJson.startsWith('[') && !authJson.includes(' ')) {
+    try {
+      const decoded = Buffer.from(authJson, 'base64').toString('utf8');
+      if (decoded.startsWith('{')) {
+        console.log("Successfully decoded GOOGLE_SERVICE_ACCOUNT_JSON from Base64 representation");
+        authJson = decoded;
+      }
+    } catch (b64Err) {
+      console.warn("Attempted to decode GOOGLE_SERVICE_ACCOUNT_JSON as Base64, but failed. Proceeding with raw string.", b64Err);
+    }
   }
 
   // Handle cases where the secret might be wrapped in quotes (common copy-paste issue)
@@ -131,27 +222,127 @@ async function getSheetsClient() {
     authJson = authJson.slice(1, -1).trim();
   }
 
+  // Handle common escaping issues
   let credentials;
   try {
     credentials = JSON.parse(authJson);
   } catch (e) {
-    const preview = authJson.substring(0, 30) + "...";
-    let message = `Failed to parse GOOGLE_SERVICE_ACCOUNT_JSON. The value starts with "${preview}".`;
-    
-    if (authJson.includes('@') && !authJson.startsWith('{')) {
-      message += " It looks like you pasted just the Service Account EMAIL address. You must paste the ENTIRE JSON content from the key file you downloaded from Google Cloud Console (it starts with '{' and contains a 'private_key' field).";
-    } else {
-      message += " Ensure you pasted the ENTIRE JSON content from your Google Service Account key file, not just a path or a single field.";
+    try {
+      // Try to unescape if it looks like a stringified JSON
+      credentials = JSON.parse(JSON.parse(`"${authJson}"`));
+    } catch (e2) {
+      const preview = authJson.substring(0, 30) + "...";
+      let message = `Erro ao analisar GOOGLE_SERVICE_ACCOUNT_JSON. O valor começa com "${preview}".`;
+      
+      if (authJson.includes('@') && !authJson.startsWith('{')) {
+        message += " Parece que você colou apenas o EMAIL da conta de serviço. Você deve copiar o conteúdo JSON COMPLETO do arquivo de chave.";
+      } else {
+        message += " Verifique se colou o conteúdo JSON COMPLETO do arquivo de chave da sua conta de serviço (incluindo as chaves {}).";
+      }
+      
+      throw new Error(message);
     }
-    
-    throw new Error(message);
   }
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+
+  // Normalize private key escapes (extremely common on Netlify, Vercel, and Cloud environments)
+  if (credentials && credentials.private_key) {
+    credentials.private_key = credentials.private_key.replace(/\\n/g, '\n');
+  }
+
+  // Lightweight REST client instead of heavy googleapis package
+  // This fully prevents Netlify/Vercel/serverless bundle size and dynamic require issue!
+  let cachedToken: string | null = null;
+  let tokenExpiryTime = 0;
+
+  const toBase64Url = (str: string | Buffer): string => {
+    const buf = typeof str === 'string' ? Buffer.from(str) : str;
+    return buf.toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  };
+
+  async function getAccessToken() {
+    const now = Math.floor(Date.now() / 1000);
+    if (cachedToken && now < tokenExpiryTime - 60) {
+      return cachedToken;
+    }
+
+    try {
+      const header = { alg: 'RS256', typ: 'JWT' };
+      const claim = {
+        iss: credentials.client_email,
+        scope: 'https://www.googleapis.com/auth/spreadsheets',
+        aud: 'https://oauth2.googleapis.com/token',
+        exp: now + 3600,
+        iat: now,
+      };
+
+      const base64Header = toBase64Url(JSON.stringify(header));
+      const base64Claim = toBase64Url(JSON.stringify(claim));
+      const signatureInput = `${base64Header}.${base64Claim}`;
+
+      const sign = crypto.createSign('RSA-SHA256');
+      sign.update(signatureInput);
+      const signature = toBase64Url(sign.sign(credentials.private_key));
+
+      const jwt = `${signatureInput}.${signature}`;
+
+      const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: jwt,
+      });
+
+      cachedToken = tokenResponse.data.access_token;
+      tokenExpiryTime = now + (tokenResponse.data.expires_in || 3600);
+      return cachedToken;
+    } catch (tokenErr: any) {
+      console.error("Error generating Google Auth Access Token:", tokenErr?.response?.data || tokenErr.message);
+      throw new Error(`Google Auth error: ${tokenErr?.response?.data?.error_description || tokenErr.message}`);
+    }
+  }
+
+  const axiosInstance = axios.create({
+    timeout: 30000,
   });
 
-  sheetsClient = google.sheets({ version: "v4", auth });
+  sheetsClient = {
+    spreadsheets: {
+      get: async ({ spreadsheetId }: { spreadsheetId: string }) => {
+        const token = await getAccessToken();
+        return axiosInstance.get(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+      },
+      values: {
+        get: async ({ spreadsheetId, range }: { spreadsheetId: string, range: string }) => {
+          const token = await getAccessToken();
+          return axiosInstance.get(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+        },
+        update: async ({ spreadsheetId, range, valueInputOption, requestBody }: { spreadsheetId: string, range: string, valueInputOption: string, requestBody: any }) => {
+          const token = await getAccessToken();
+          return axiosInstance.put(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}?valueInputOption=${valueInputOption}`, requestBody, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+        },
+        append: async ({ spreadsheetId, range, valueInputOption, requestBody }: { spreadsheetId: string, range: string, valueInputOption: string, requestBody: any }) => {
+          const token = await getAccessToken();
+          return axiosInstance.post(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:append?valueInputOption=${valueInputOption}`, requestBody, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+        },
+        clear: async ({ spreadsheetId, range }: { spreadsheetId: string, range: string }) => {
+          const token = await getAccessToken();
+          return axiosInstance.post(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}:clear`, {}, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+        }
+      }
+    }
+  };
+
   return sheetsClient;
 }
 
@@ -177,11 +368,11 @@ let cachedSpreadsheetInfo: Record<string, any> = {};
 let cachedMetadataFetchTime: Record<string, number> = {};
 const METADATA_CACHE_DURATION = 60000; // 1 minute
 
-app.get("/api/status", async (req, res) => {
+apiRouter.get("/status", async (req, res) => {
   const spreadsheetId = getRequestSpreadsheetId(req);
   console.log(`[Status] Check requested for: ${spreadsheetId}`);
   try {
-    const authJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
+    let authJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON?.trim();
     if (!authJson) {
       return res.json({ 
         ok: false, 
@@ -189,9 +380,33 @@ app.get("/api/status", async (req, res) => {
       });
     }
 
+    // Handle Base64-encoded JSON strings
+    if (authJson && !authJson.startsWith('{') && !authJson.startsWith('[') && !authJson.includes(' ')) {
+      try {
+        const decoded = Buffer.from(authJson, 'base64').toString('utf8');
+        if (decoded.startsWith('{')) {
+          authJson = decoded;
+        }
+      } catch (b64Err) {
+        console.warn("Attempted to decode GOOGLE_SERVICE_ACCOUNT_JSON as Base64, but failed.", b64Err);
+      }
+    }
+
     let credentials;
     try {
-      credentials = JSON.parse(authJson);
+      let cleanedJson = authJson;
+      if ((cleanedJson.startsWith('"') && cleanedJson.endsWith('"')) || 
+          (cleanedJson.startsWith("'") && cleanedJson.endsWith("'"))) {
+        cleanedJson = cleanedJson.slice(1, -1).trim();
+      }
+      try {
+        credentials = JSON.parse(cleanedJson);
+      } catch (innerErr) {
+        credentials = JSON.parse(JSON.parse(`"${cleanedJson}"`));
+      }
+      if (credentials && credentials.private_key) {
+        credentials.private_key = credentials.private_key.replace(/\\n/g, '\n');
+      }
     } catch (e) {
       return res.json({ 
         ok: false, 
@@ -199,7 +414,7 @@ app.get("/api/status", async (req, res) => {
       });
     }
 
-    const serviceAccountEmail = credentials.client_email;
+    const serviceAccountEmail = credentials?.client_email || "";
     const now = Date.now();
     let isApiKey = spreadsheetId.startsWith("AIza");
     let spreadsheetError = null;
@@ -251,16 +466,16 @@ app.get("/api/status", async (req, res) => {
 const dataCache: Record<string, { data: any, timestamp: number }> = {};
 const DATA_CACHE_DURATION = 30000; // 30 seconds
 
-app.get("/api/data/:sheetName", async (req, res) => {
+apiRouter.get("/data/:sheetName", async (req, res) => {
   try {
     const { sheetName } = req.params;
     const spreadsheetId = getRequestSpreadsheetId(req);
-    const now = Date.now();
+    const fetchNow = Date.now();
 
     const cacheKey = `${spreadsheetId}_${sheetName}`;
 
     // Check cache
-    if (dataCache[cacheKey] && (now - dataCache[cacheKey].timestamp < DATA_CACHE_DURATION)) {
+    if (dataCache[cacheKey] && (fetchNow - dataCache[cacheKey].timestamp < DATA_CACHE_DURATION)) {
       return res.json(dataCache[cacheKey].data);
     }
 
@@ -305,32 +520,75 @@ app.get("/api/data/:sheetName", async (req, res) => {
     const rows = response.data.values;
     if (!rows || rows.length === 0) {
       const emptyData: any[] = [];
-      dataCache[sheetName] = { data: emptyData, timestamp: now };
+      dataCache[sheetName] = { data: emptyData, timestamp: fetchNow };
       return res.json(emptyData);
     }
 
     const headers = rows[0];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Identify discount related columns dynamically on the backend too
+    const keysNormalized = headers.map((k: any) => String(k || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+    const priceIdx = keysNormalized.findIndex((k: string) => ["pv", "preco venda", "preco", "valor"].includes(k));
+    const finalIdx = keysNormalized.findIndex((k: string) => ["pf", "preco final", "valor final"].includes(k));
+    const discIdx = keysNormalized.findIndex((k: string) => ["desconto", "percentual"].includes(k));
+    const validIdx = keysNormalized.findIndex((k: string) => ["validade", "expira", "vencimento"].includes(k));
+
     const data = rows.slice(1).map((row: any) => {
       const obj: any = {};
       headers.forEach((header: string, index: number) => {
-        obj[header] = row[index];
+        let val = row[index];
+        
+        // Backend Expiration logic: if we found the relevant columns, check them
+        if (index === discIdx || index === finalIdx) {
+          const validDateStr = row[validIdx];
+          if (validDateStr) {
+            try {
+              let parsedDate: Date | null = null;
+              if (typeof validDateStr === 'number') {
+                parsedDate = new Date((validDateStr - 25569) * 86400 * 1000);
+              } else if (String(validDateStr).includes('/')) {
+                const parts = String(validDateStr).split('/');
+                if (parts.length === 3) parsedDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+              } else {
+                parsedDate = new Date(validDateStr);
+              }
+
+              if (parsedDate && !isNaN(parsedDate.getTime())) {
+                parsedDate.setHours(0, 0, 0, 0);
+                if (today > parsedDate) {
+                  // Expired!
+                  if (index === discIdx) val = "0.00%";
+                  if (index === finalIdx) val = row[priceIdx];
+                }
+              }
+            } catch (e) {}
+          }
+        }
+
+        obj[header] = val;
       });
       return obj;
     });
 
     // Update cache
-    dataCache[cacheKey] = { data, timestamp: now };
+    dataCache[cacheKey] = { data, timestamp: fetchNow };
 
     res.json(data);
   } catch (error: any) {
     console.error(`Error fetching sheet ${req.params.sheetName}:`, error);
-    
-    let message = error.message;
-    const spreadsheetId = getRequestSpreadsheetId(req);
+    res.status(500).json({ 
+      error: "Error fetching data from Sheets", 
+      message: error.message,
+      stack: error.stack,
+      details: error.details || error,
+      sheet: req.params.sheetName 
+    });
   }
 });
 
-app.post("/api/order", async (req, res) => {
+apiRouter.post("/order", async (req, res) => {
   try {
     const order = req.body;
     const spreadsheetId = getRequestSpreadsheetId(req);
@@ -392,9 +650,9 @@ app.post("/api/order", async (req, res) => {
   }
 });
 
-app.post("/api/catalog/update", async (req, res) => {
+apiRouter.post("/catalog/update", async (req, res) => {
   try {
-    const { industria, dados } = req.body;
+    const { industria, dados, defaultExpiryDate } = req.body;
     const spreadsheetId = getRequestSpreadsheetId(req);
     const data = dados;
     const industry = industria;
@@ -441,14 +699,15 @@ app.post("/api/catalog/update", async (req, res) => {
 
           allRows.slice(1).forEach(row => {
             const id = String(row[idIdx] || "").trim();
-            const ean = String(row[eanIdx] || "").trim().replace(/^'/, '');
+            const rawEan = String(row[eanIdx] || "").trim().replace(/^'/, '');
+            const ean = normalizeEAN(rawEan);
             
             const entry = { row, sheetName };
             if (id && id.length >= 2) {
               if (!existingProductsMap.has(id)) existingProductsMap.set(id, []);
               existingProductsMap.get(id)!.push(entry);
             }
-            if (ean && ean.length >= 5) {
+            if (ean) {
               if (!existingProductsMap.has(ean)) existingProductsMap.set(ean, []);
               existingProductsMap.get(ean)!.push(entry);
             }
@@ -471,6 +730,7 @@ app.post("/api/catalog/update", async (req, res) => {
     const priceIdx = 4;
     const discIdx = 5;
     const finalIdx = 6;
+    const validIdx = 7;
     
     // Process the uploaded data
     const mapping = INDUSTRY_MAPPINGS[industria.toUpperCase()] || INDUSTRY_MAPPINGS['UNILEVER'];
@@ -520,7 +780,8 @@ app.post("/api/catalog/update", async (req, res) => {
       stock: getSourceIndex(["Estoque", "Sald", "Saldo", "QTDE", "Qtde", "Quant", "Quantidade", "STOCK", "DISPONIVEL", "QTD DISP", "ESTOQ", "ESTOQUE", "UNIDADES", "UNID"]),
       price: getSourceIndex(["PV", "Preço Venda", "Preco Venda", "PRECO", "PREÇO", "VALOR", "TABELA", "UNITARIO", "UNITÁRIO", "PREÇO UNITARIO", "VALOR UNITARIO"]),
       discount: getSourceIndex(["DESC", "Desconto", "DESCONTO", "PERCENTUAL", "BONUS", "%DESC", "DESC TOTAL"]),
-      final: getSourceIndex(["PREÇO C/ DESC", "PRECO C/ DESC", "PRECO C DESC", "PF", "Preço Final", "Preco Final", "VALOR FINAL", "PRECO LIQUIDO", "PRECO LÍQUIDO", "VALOR LIQUIDO", "LIQUIDO"])
+      final: getSourceIndex(["PREÇO C/ DESC", "PRECO C/ DESC", "PRECO C DESC", "PF", "Preço Final", "Preco Final", "VALOR FINAL", "PRECO LIQUIDO", "PRECO LÍQUIDO", "VALOR LIQUIDO", "LIQUIDO"]),
+      valid: getSourceIndex(["VALOR VALIDADE", "VALIDADE", "VENCIMENTO", "DATA FIM", "EXPIRA", "VALIDADE DESCONTO"])
     };
 
     const hasSourceHeaders = sourceHeaders.length > 0;
@@ -536,12 +797,97 @@ app.post("/api/catalog/update", async (req, res) => {
     let newCount = 0;
     const newProductsRows: any[][] = [];
     const log: string[] = [];
+    const updatedProductsLog: string[] = [];
+    const newProductsLog: string[] = [];
 
     log.push(`Iniciando atualização do catálogo ${industria}...`);
     log.push(`Planilha detectada com ${rowsToProcess.length} linhas de dados.`);
     if (hasSourceHeaders) {
       log.push(`Colunas encontradas: EAN(${mappedIndices.ean}), Preço(${mappedIndices.price}), Final(${mappedIndices.final}), Descrição(${mappedIndices.desc})`);
     }
+
+    // --- LÓGICA DE DETECÇÃO E APAGAR COLUNAS (Estoque, Preco Venda, Desconto, Preco Final) ---
+    const targetIndustry = industria.split(' ')[0].trim().toUpperCase();
+    const targetIndustryIdsAndEans = new Set<string>();
+    const clearedProductIdsAndEans = new Set<string>();
+
+    const prodSheet = sheetData["Produtos"];
+    if (prodSheet) {
+      const prodHeaders = prodSheet.headers || [];
+      const prodFabColIdx = prodHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("fabricante"));
+      
+      if (prodFabColIdx !== -1) {
+        prodSheet.rows.slice(1).forEach(row => {
+          const rowFab = String(row[prodFabColIdx] || "").trim().toUpperCase();
+          const matchesFab = rowFab === targetIndustry || rowFab.startsWith(targetIndustry) || targetIndustry.startsWith(rowFab);
+          
+          if (matchesFab) {
+            const id = String(row[idIdx] || "").trim();
+            const rawEan = String(row[eanIdx] || "").trim().replace(/^'/, '');
+            const ean = normalizeEAN(rawEan);
+            
+            if (id) targetIndustryIdsAndEans.add(id);
+            if (ean) targetIndustryIdsAndEans.add(ean);
+          }
+        });
+      }
+    }
+
+    let clearedCountTotal = 0;
+    
+    Object.keys(sheetData).forEach(sheetName => {
+      const sheet = sheetData[sheetName];
+      const headers = sheet.headers || [];
+      const sheetFabColIdx = headers.findIndex((h: any) => String(h || "").toLowerCase().includes("fabricante"));
+      
+      sheet.rows.slice(1).forEach(row => {
+        let belongsToIndustry = false;
+        
+        if (sheetFabColIdx !== -1 && row[sheetFabColIdx]) {
+          const rowFab = String(row[sheetFabColIdx] || "").trim().toUpperCase();
+          belongsToIndustry = rowFab === targetIndustry || rowFab.startsWith(targetIndustry) || targetIndustry.startsWith(rowFab);
+        }
+        
+        if (!belongsToIndustry) {
+          const id = String(row[idIdx] || "").trim();
+          const rawEan = String(row[eanIdx] || "").trim().replace(/^'/, '');
+          const ean = normalizeEAN(rawEan);
+          
+          if ((id && targetIndustryIdsAndEans.has(id)) || (ean && targetIndustryIdsAndEans.has(ean))) {
+            belongsToIndustry = true;
+          }
+        }
+        
+        if (belongsToIndustry) {
+          const id = String(row[idIdx] || "").trim();
+          const rawEan = String(row[eanIdx] || "").trim().replace(/^'/, '');
+          const ean = normalizeEAN(rawEan);
+          const desc = String(row[descIdx] || "").trim();
+          
+          const label = [
+            desc ? `"${desc}"` : "",
+            id ? `ID: ${id}` : "",
+            ean ? `EAN: ${ean}` : ""
+          ].filter(Boolean).join(" | ");
+
+          if (label) {
+            clearedProductIdsAndEans.add(label);
+          }
+
+          while (row.length <= Math.max(stockIdx, priceIdx, discIdx, finalIdx)) {
+            row.push("");
+          }
+          
+          row[stockIdx] = "";
+          row[priceIdx] = "";
+          row[discIdx] = "";
+          row[finalIdx] = "";
+          clearedCountTotal++;
+        }
+      });
+    });
+    
+    log.push(`Varredura concluída: Limpos valores de [Estoque, Preco Venda, Desconto, Preco Final] de ${clearedCountTotal} linhas de produto da indústria ${targetIndustry} antes da atualização.`);
 
     const applyCustomRounding = (val: number): number => {
       if (isNaN(val)) return 0;
@@ -611,16 +957,18 @@ app.post("/api/catalog/update", async (req, res) => {
       let newPrice: any = "";
       let newDiscount: any = "";
       let newFinal: any = "";
+      let newValid = "";
 
       if (Array.isArray(item)) {
         if (hasSourceHeaders) {
           newId = String(item[mappedIndices.id !== -1 ? mappedIndices.id : mapping.id] || "").trim();
-          newEan = String(item[mappedIndices.ean !== -1 ? mappedIndices.ean : mapping.ean] || "").trim().replace(/^'/, '');
+          newEan = normalizeEAN(String(item[mappedIndices.ean !== -1 ? mappedIndices.ean : mapping.ean] || "").trim().replace(/^'/, ''));
           newDesc = String(item[mappedIndices.desc !== -1 ? mappedIndices.desc : mapping.desc] || "").trim();
           newStock = String(item[mappedIndices.stock !== -1 ? mappedIndices.stock : mapping.stock] || "").trim();
           newPrice = String(item[mappedIndices.price !== -1 ? mappedIndices.price : mapping.price] || "").trim();
           newDiscount = String(item[mappedIndices.discount !== -1 ? mappedIndices.discount : mapping.discount] || "").trim();
           newFinal = String(item[mappedIndices.final !== -1 ? mappedIndices.final : mapping.final] || "").trim();
+          newValid = String(item[mappedIndices.valid !== -1 ? mappedIndices.valid : -1] || "").trim() || defaultExpiryDate || "";
 
           // Logical Check for prices and discounts
           let pVal = parseFloat(cleanNumericString(newPrice));
@@ -673,7 +1021,7 @@ app.post("/api/catalog/update", async (req, res) => {
           }
         } else {
           newId = String(item[mapping.id] || "").trim();
-          newEan = String(item[mapping.ean] || "").trim().replace(/^'/, '');
+          newEan = normalizeEAN(String(item[mapping.ean] || "").trim().replace(/^'/, ''));
           newDesc = String(item[mapping.desc] || "").trim();
           newStock = String(item[mapping.stock] || "").trim();
           
@@ -716,6 +1064,16 @@ app.post("/api/catalog/update", async (req, res) => {
       
       if (isJunk || isHeaderRepeat) return;
 
+      // Remove from clearedProductIdsAndEans if it was updated or imported
+      const labelToRemove = Array.from(clearedProductIdsAndEans).find(label => {
+        return (newId && label.includes(`ID: ${newId}`)) || 
+               (newEan && label.includes(`EAN: ${newEan}`)) || 
+               (newDesc && label.includes(`"${newDesc}"`));
+      });
+      if (labelToRemove) {
+        clearedProductIdsAndEans.delete(labelToRemove);
+      }
+
       const matchingEntriesById = newId ? (existingProductsMap.get(newId) || []) : [];
       const matchingEntriesByEan = newEan ? (existingProductsMap.get(newEan) || []) : [];
       
@@ -738,8 +1096,10 @@ app.post("/api/catalog/update", async (req, res) => {
           updateVal(priceIdx, formatBrazilian(newPrice));
           updateVal(discIdx, formatBrazilian(newDiscount, true));
           updateVal(finalIdx, formatBrazilian(newFinal));
+          updateVal(validIdx, newValid);
         });
         updatedCount++;
+        updatedProductsLog.push(`${newDesc || "Sem Descrição"} (ID: ${newId || '-'}) → Est: ${newStock || '0'} | Preço: R$ ${formatBrazilian(newPrice)} | Desc: ${formatBrazilian(newDiscount, true)} | Final: R$ ${formatBrazilian(newFinal)}`);
       } else {
         const industryName = industria.split(' ')[0].toUpperCase();
         // Add as new product to "Produtos" sheet
@@ -754,12 +1114,14 @@ app.post("/api/catalog/update", async (req, res) => {
         newRow[priceIdx] = formatBrazilian(newPrice);
         newRow[discIdx] = formatBrazilian(newDiscount, true);
         newRow[finalIdx] = formatBrazilian(newFinal);
+        newRow[validIdx] = newValid;
 
         const fabColIdx = headers.findIndex((h: any) => String(h || "").toLowerCase().includes("fabricante"));
         if (fabColIdx !== -1) newRow[fabColIdx] = industryName;
         
         newProductsRows.push(newRow);
         newCount++;
+        newProductsLog.push(`${newDesc || "Sem Descrição"} (ID: ${newId || '-'}) → Est: ${newStock || '0'} | Preço: R$ ${formatBrazilian(newPrice)} | Desc: ${formatBrazilian(newDiscount, true)} | Final: R$ ${formatBrazilian(newFinal)}`);
         
         const entry = { row: newRow, sheetName: "Produtos" };
         if (newId) {
@@ -776,8 +1138,42 @@ app.post("/api/catalog/update", async (req, res) => {
     log.push(`Processamento concluído para ${industria}.`);
     log.push(`Resumo: ${updatedCount} produtos existentes foram atualizados.`);
     log.push(`Resumo: ${newCount} novos produtos foram adicionados.`);
+    if (clearedProductIdsAndEans.size > 0) {
+      log.push(`Resumo: ${clearedProductIdsAndEans.size} produtos desta indústria que não constavam na nova planilha tiveram Estoque e Preços apagados/bloqueados.`);
+    }
     if (isKimberlyInput) {
       log.push(`Aplicadas correções automáticas de decimais e descontos para Kimberly.`);
+    }
+
+    if (updatedProductsLog.length > 0) {
+      log.push(`--- DETALHES DOS PRODUTOS ATUALIZADOS ---`);
+      if (updatedProductsLog.length <= 150) {
+        updatedProductsLog.forEach(p => log.push(`• [ATUALIZADO] ${p}`));
+      } else {
+        updatedProductsLog.slice(0, 150).forEach(p => log.push(`• [ATUALIZADO] ${p}`));
+        log.push(`• ... e outros ${updatedProductsLog.length - 150} produtos atualizados.`);
+      }
+    }
+
+    if (newProductsLog.length > 0) {
+      log.push(`--- DETALHES DOS PRODUTOS NOVOS ADICIONADOS ---`);
+      if (newProductsLog.length <= 150) {
+        newProductsLog.forEach(p => log.push(`• [NOVO] ${p}`));
+      } else {
+        newProductsLog.slice(0, 150).forEach(p => log.push(`• [NOVO] ${p}`));
+        log.push(`• ... e outros ${newProductsLog.length - 150} produtos adicionados.`);
+      }
+    }
+
+    if (clearedProductIdsAndEans.size > 0) {
+      log.push(`--- PRODUTOS NÃO ATUALIZADOS (LIMPOS POR FALTA NA PLANILHA) ---`);
+      const clearedList = Array.from(clearedProductIdsAndEans);
+      if (clearedList.length <= 150) {
+        clearedList.forEach(p => log.push(`• [LIMPO] ${p}`));
+      } else {
+        clearedList.slice(0, 150).forEach(p => log.push(`• [LIMPO] ${p}`));
+        log.push(`• ... e outros ${clearedList.length - 150} produtos limpos.`);
+      }
     }
 
     log.push(`Sincronizando alterações com as abas Produtos, Ofertas e Lancamentos...`);
@@ -818,7 +1214,7 @@ app.post("/api/catalog/update", async (req, res) => {
   }
 });
 
-app.post("/api/client/update", async (req, res) => {
+apiRouter.post("/client/update", async (req, res) => {
   try {
     const client = req.body;
     const spreadsheetId = getRequestSpreadsheetId(req);
@@ -891,15 +1287,58 @@ app.post("/api/client/update", async (req, res) => {
   }
 });
 
+// Mount API Router with support for Netlify Functions path
+const apiPath = process.env.NETLIFY ? "/.netlify/functions/api" : "/api";
+app.use([apiPath, "/api"], apiRouter);
+
+// Fallback for API routes that might be called without expected prefix in various environments
+app.use((req, res, next) => {
+  if (req.path.startsWith('/data/') || req.path.startsWith('/catalog/') || req.path === '/status' || req.path === '/health') {
+    return apiRouter(req, res, next);
+  }
+  next();
+});
+
+// Health check endpoint (can be reached via /api/health)
+apiRouter.get("/health", (req, res) => {
+  res.json({ 
+    status: "ok", 
+    timestamp: new Date().toISOString(),
+    env: {
+      NETLIFY: !!process.env.NETLIFY,
+      VERCEL: !!process.env.VERCEL,
+      NODE_ENV: process.env.NODE_ENV,
+      GOOGLE_SHEET_ID_SET: !!process.env.GOOGLE_SHEET_ID
+    }
+  });
+});
+
+// Generic catch-all for API router
+apiRouter.all("*", (req, res) => {
+  res.status(404).json({ error: "Route not found in API router", path: req.path });
+});
+
 // Vite middleware setup
 export async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
+  const isServerless = !!(process.env.NETLIFY || process.env.VERCEL);
+  const isProd = process.env.NODE_ENV === "production";
+
+  if (!isProd && !isServerless) {
+    try {
+      // Completely hide vite from static analysis using string concatenation
+      const v = "vi";
+      const t = "te";
+      const viteModule = await import(v + t);
+      const vite = await viteModule.createServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+      console.log("Vite development middleware loaded");
+    } catch (e) {
+      console.error("Vite middleware failed to load:", e);
+    }
+  } else if (!isServerless) {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -907,18 +1346,31 @@ export async function startServer() {
     });
   }
 
-  if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
+  // Only listen on a port if NOT in a serverless environment
+  if (!isServerless) {
+    const port = Number(process.env.PORT) || PORT;
+    app.listen(port, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${port}`);
     });
   }
 }
 
-// Support for serverless deployments (Vercel/Netlify)
+// Ensure app is always exported for serverless
+export { app };
 export default app;
 
-const isMainModule = import.meta.url === `file://${path.resolve(process.argv[1])}`;
+// Support for serverless deployments (Vercel/Netlify)
+const isMainModule = () => {
+  if (process.env.NETLIFY || process.env.VERCEL) return false;
+  try {
+    const currentPath = fileURLToPath(import.meta.url);
+    const mainPath = path.resolve(process.argv[1] || "");
+    return mainPath.includes(currentPath) || currentPath.includes(mainPath);
+  } catch (e) {
+    return false;
+  }
+};
 
-if (isMainModule || !process.env.VERCEL) {
+if (isMainModule()) {
   startServer().catch(console.error);
 }

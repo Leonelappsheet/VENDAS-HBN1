@@ -12,28 +12,34 @@ export default defineConfig(({mode}) => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
+        workbox: {
+          maximumFileSizeToCacheInBytes: 5000000,
+        },
         manifest: {
           name: 'VENDAS HBN1',
-          short_name: 'HBN1',
+          short_name: 'VENDAS HBN1',
           description: 'Sistema de gestão de vendas HBN1',
           theme_color: '#FF6B00',
+          background_color: '#ffffff',
+          display: 'standalone',
           icons: [
             {
-              src: 'pwa-192x192.png',
+              src: '/logo.svg',
               sizes: '192x192',
-              type: 'image/png'
+              type: 'image/svg+xml',
+              purpose: 'any'
             },
             {
-              src: 'pwa-512x512.png',
+              src: '/logo.svg',
               sizes: '512x512',
-              type: 'image/png'
+              type: 'image/svg+xml',
+              purpose: 'any'
             },
             {
-              src: 'pwa-512x512.png',
-              sizes: '512x512',
-              type: 'image/png',
-              purpose: 'any maskable'
+              src: '/logo.svg',
+              sizes: '192x192',
+              type: 'image/svg+xml',
+              purpose: 'maskable'
             }
           ]
         }
@@ -46,6 +52,35 @@ export default defineConfig(({mode}) => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
+    },
+    build: {
+      outDir: 'dist',
+      sourcemap: false,
+      chunkSizeWarningLimit: 1200,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('firebase')) {
+                return 'firebase-core';
+              }
+              if (id.includes('xlsx') || id.includes('exceljs')) {
+                return 'excel';
+              }
+              if (id.includes('jspdf') || id.includes('pdfjs-dist')) {
+                return 'pdf';
+              }
+              if (id.includes('recharts') || id.includes('d3')) {
+                return 'charts';
+              }
+              if (id.includes('lucide-react')) {
+                return 'icons';
+              }
+              return 'vendor';
+            }
+          }
+        }
+      }
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
