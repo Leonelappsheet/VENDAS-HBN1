@@ -31,12 +31,103 @@ function isHtmlResponse(data: any): boolean {
   return false;
 }
 
+function parseCSV(csvText: string): any[] {
+  const lines: string[] = [];
+  let currentLine = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < csvText.length; i++) {
+    const char = csvText[i];
+    const nextChar = csvText[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        currentLine += '"'; // Escaped quote
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === '\n' && !inQuotes) {
+      lines.push(currentLine);
+      currentLine = '';
+    } else if (char === '\r' && !inQuotes) {
+      // Ignore carriage return
+    } else {
+      currentLine += char;
+    }
+  }
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+
+  if (lines.length === 0) return [];
+
+  const parseLine = (line: string): string[] => {
+    const fields: string[] = [];
+    let field = '';
+    let inQuotedField = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+
+      if (char === '"') {
+        if (inQuotedField && nextChar === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotedField = !inQuotedField;
+        }
+      } else if (char === ',' && !inQuotedField) {
+        fields.push(field);
+        field = '';
+      } else {
+        field += char;
+      }
+    }
+    fields.push(field);
+    return fields;
+  };
+
+  const headers = parseLine(lines[0]).map(h => h.trim());
+  
+  return lines.slice(1).map(line => {
+    const fields = parseLine(line);
+    const obj: any = {};
+    headers.forEach((header, index) => {
+      obj[header] = fields[index] !== undefined ? fields[index].trim() : null;
+    });
+    return obj;
+  });
+}
+
 let currentRegional = 'TIMON-MA';
 
 async function fetchDirectlyFromGoogleSheets(sheetName: string, customSpreadsheetId?: string): Promise<any[]> {
   const spreadsheetId = customSpreadsheetId || getSpreadsheetId(currentRegional);
   console.log(`[Direct Fetch] Falling back to direct Google Sheets fetching for sheet: "${sheetName}" using spreadsheetId: "${spreadsheetId}"`);
   
+  // Special case for usuarios sheet: fetch raw CSV via gid 2088810725 to bypass Gviz cell type coercion/inference issues.
+  // This ensures alphanumeric passwords (like "adminhbn1" or "admin123") do not get converted to null.
+  if (sheetName.toLowerCase() === 'usuarios') {
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=2088810725`;
+    try {
+      console.log(`[Direct Fetch] Trying raw CSV fetch for "usuarios" using gid 2088810725`);
+      const response = await axios.get(csvUrl, { timeout: 8000 });
+      if (response.data && typeof response.data === 'string' && !isHtmlResponse(response.data)) {
+        const rows = parseCSV(response.data);
+        // Verify we got valid data by checking if standard user headers or rows exist
+        if (rows.length > 0 && (rows[0].Usuario !== undefined || rows[0].usuario !== undefined || rows[0].Nome !== undefined)) {
+          console.log(`[Direct Fetch] Successfully loaded ${rows.length} rows directly from raw CSV for "usuarios"`);
+          return rows;
+        }
+      }
+      console.warn(`[Direct Fetch] CSV fetch returned invalid or HTML data, falling back to Gviz JSON for "usuarios"`);
+    } catch (csvErr: any) {
+      console.warn(`[Direct Fetch] Failed to fetch raw CSV for "usuarios" (${csvErr.message}), falling back to Gviz JSON`);
+    }
+  }
+
   const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json&headers=1&sheet=${encodeURIComponent(sheetName)}`;
   
   try {
