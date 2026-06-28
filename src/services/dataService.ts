@@ -21,7 +21,7 @@ import { toast } from 'sonner';
 import { getSpreadsheetId } from '../constants/regionals';
 import { normalizeEAN } from '../lib/utils';
 
-const API_URL = ''; // Relative to current origin
+const API_URL = import.meta.env.VITE_API_URL || ''; // Relative to current origin or custom backend URL
 
 function isHtmlResponse(data: any): boolean {
   if (typeof data === 'string') {
@@ -32,6 +32,105 @@ function isHtmlResponse(data: any): boolean {
 }
 
 let currentRegional = 'TIMON-MA';
+
+async function fetchDirectlyFromGoogleSheets(sheetName: string, customSpreadsheetId?: string): Promise<any[]> {
+  const spreadsheetId = customSpreadsheetId || getSpreadsheetId(currentRegional);
+  console.log(`[Direct Fetch] Falling back to direct Google Sheets fetching for sheet: "${sheetName}" using spreadsheetId: "${spreadsheetId}"`);
+  
+  const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:json&headers=1&sheet=${encodeURIComponent(sheetName)}`;
+  
+  try {
+    const response = await axios.get(url, { responseType: 'text', timeout: 8000 });
+    const text = response.data;
+    
+    const jsonMatch = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*?)\);/);
+    if (!jsonMatch) {
+      throw new Error('Could not parse Google Sheets response structure. Is the sheet shared publicly with "Anyone with the link can view"?');
+    }
+    
+    const obj = JSON.parse(jsonMatch[1]);
+    if (obj.status === 'error') {
+      throw new Error(obj.errors?.[0]?.detailed_message || 'Google Sheets API returned an error');
+    }
+    
+    const table = obj.table;
+    const cols = table.cols.map((c: any, index: number) => {
+      return c.label ? c.label.trim() : String.fromCharCode(65 + index);
+    });
+    
+    const rows = table.rows.map((r: any) => {
+      const rowObj: any = {};
+      if (r && r.c) {
+        r.c.forEach((cell: any, idx: number) => {
+          const colName = cols[idx];
+          if (colName) {
+            if (cell) {
+              rowObj[colName] = cell.v !== undefined ? cell.v : null;
+            } else {
+              rowObj[colName] = null;
+            }
+          }
+        });
+      }
+      return rowObj;
+    });
+    
+    console.log(`[Direct Fetch] Successfully loaded ${rows.length} rows directly from Google Sheets for sheet "${sheetName}"`);
+    return rows;
+  } catch (err: any) {
+    console.error(`[Direct Fetch Error] Failed direct fetch for sheet "${sheetName}":`, err.message);
+    throw err;
+  }
+}
+
+async function safeFetch(endpoint: string, sheetName: string, options: any = {}): Promise<any> {
+  try {
+    if (endpoint.includes('/api/status')) {
+      const response = await axios.get(`${API_URL}${endpoint}`, { ...options, timeout: 5000 });
+      if (isHtmlResponse(response.data)) {
+        throw new Error('Backend returned HTML instead of status JSON');
+      }
+      return response;
+    }
+
+    const response = await axios.get(`${API_URL}${endpoint}`, {
+      ...options,
+      timeout: 6000 // Fallback fast if server is unresponsive
+    });
+    
+    if (isHtmlResponse(response.data)) {
+      console.warn(`[SafeFetch] Backend API at ${endpoint} returned HTML. Falling back to direct Google Sheets fetch.`);
+      const customId = options.headers?.['x-spreadsheet-id'] || getSpreadsheetId(currentRegional);
+      const data = await fetchDirectlyFromGoogleSheets(sheetName, customId);
+      return { data, isFallback: true };
+    }
+    
+    return response;
+  } catch (error: any) {
+    console.warn(`[SafeFetch] Backend API at ${endpoint} failed (${error.message}). Falling back to direct Google Sheets fetch.`);
+    
+    if (endpoint.includes('/api/status')) {
+      return {
+        data: {
+          ok: false,
+          isFallback: true,
+          spreadsheetInfo: {
+            sheets: ['Produtos', 'Ofertas', 'Lancamentos', 'Clientes', 'Pedidos', 'Carrinhos', 'usuarios', 'Metas']
+          }
+        }
+      };
+    }
+
+    try {
+      const customId = options.headers?.['x-spreadsheet-id'] || getSpreadsheetId(currentRegional);
+      const data = await fetchDirectlyFromGoogleSheets(sheetName, customId);
+      return { data, isFallback: true };
+    } catch (fallbackError: any) {
+      console.error(`[SafeFetch] Direct Google Sheets fallback also failed:`, fallbackError.message);
+      throw error;
+    }
+  }
+}
 
 export const dataService = {
   setRegional(regional: string) {
@@ -80,7 +179,7 @@ export const dataService = {
     const cachedData = this.getCache(cacheKey) as Product[] | null;
 
     try {
-      const response = await axios.get(`${API_URL}/api/data/${sheetName}`, {
+      const response = await safeFetch(`/api/data/${sheetName}`, sheetName, {
         headers: this.getHeaders(),
         timeout: 10000 // 10s timeout for online check
       });
@@ -289,7 +388,7 @@ export const dataService = {
     const cachedClients = this.getCache(cacheKey) as Client[] | null;
 
     try {
-      const response = await axios.get(`${API_URL}/api/data/Clientes`, {
+      const response = await safeFetch(`/api/data/Clientes`, 'Clientes', {
         headers: this.getHeaders(),
         timeout: 10000
       });
@@ -431,7 +530,7 @@ export const dataService = {
   // Orders from Google Sheets with Automatic Discovery
   async getOrdersFromSheets() {
     try {
-      const statusRes = await axios.get(`${API_URL}/api/status`, {
+      const statusRes = await safeFetch(`/api/status`, '', {
         headers: this.getHeaders()
       });
       const availableSheets = statusRes.data?.spreadsheetInfo?.sheets || [];
@@ -447,7 +546,7 @@ export const dataService = {
       }
 
       const sheetToFetch = targetSheet || 'Pedidos';
-      const response = await axios.get(`${API_URL}/api/data/${sheetToFetch}`, {
+      const response = await safeFetch(`/api/data/${sheetToFetch}`, sheetToFetch, {
         headers: this.getHeaders()
       });
       
@@ -498,7 +597,7 @@ export const dataService = {
 
   async getCartsFromSheets() {
     try {
-      const statusRes = await axios.get(`${API_URL}/api/status`, {
+      const statusRes = await safeFetch(`/api/status`, '', {
         headers: this.getHeaders()
       });
       const availableSheets = statusRes.data?.spreadsheetInfo?.sheets || [];
@@ -509,7 +608,7 @@ export const dataService = {
       );
 
       const sheetToFetch = targetSheet || 'Carrinhos';
-      const response = await axios.get(`${API_URL}/api/data/${sheetToFetch}`, {
+      const response = await safeFetch(`/api/data/${sheetToFetch}`, sheetToFetch, {
         headers: this.getHeaders()
       });
       
@@ -681,7 +780,7 @@ export const dataService = {
   // Metas from Google Sheets
   async getMetas(sellerName: string) {
     try {
-      const response = await axios.get(`${API_URL}/api/data/Metas`, {
+      const response = await safeFetch(`/api/data/Metas`, 'Metas', {
         headers: this.getHeaders()
       });
       if (!Array.isArray(response.data)) return null;
@@ -706,7 +805,7 @@ export const dataService = {
 
   async getUsersFromSheets() {
     try {
-      const response = await axios.get(`${API_URL}/api/data/usuarios`, {
+      const response = await safeFetch(`/api/data/usuarios`, 'usuarios', {
         headers: {
           'x-spreadsheet-id': '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs'
         }
@@ -767,7 +866,7 @@ export const dataService = {
 
   async getAllMetas() {
     try {
-      const response = await axios.get(`${API_URL}/api/data/Metas`, {
+      const response = await safeFetch(`/api/data/Metas`, 'Metas', {
         headers: this.getHeaders()
       });
       if (!Array.isArray(response.data)) return [];
