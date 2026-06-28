@@ -2090,13 +2090,13 @@ export default function ProductCatalog() {
 
             <main className="w-full">
               {loading ? (
-                <div className="grid grid-cols-4 gap-1.5 sm:gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
                   {[...Array(8)].map((_, i) => <div key={i} className="bg-white dark:bg-[#1E1E1E] rounded-2xl overflow-hidden shadow-sm animate-pulse h-64" />)}
                 </div>
               ) : filteredProducts.length === 0 ? (
                 <div className="text-center py-20 text-gray-500"><Package size={48} className="mx-auto mb-4" /><p>Nenhum produto encontrado.</p></div>
               ) : (
-                <div className="grid grid-cols-4 gap-1.5 sm:gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
                   {displayedProducts.map((p, index) => {
                     const cartItem = cart.find(item => item.id === p.id);
                     return (
