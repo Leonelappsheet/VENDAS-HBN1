@@ -573,7 +573,11 @@ export default function AdminPanel() {
                 </div>
                 <div className="divide-y divide-gray-50 dark:divide-gray-800">
                   {allMetas.map((m, index) => {
-                    const sellerTotal = orders.filter(o => o.seller.toLowerCase() === m.vendedor.toLowerCase()).reduce((sum, o) => sum + o.total, 0);
+                    const sellerTotal = orders.filter(o => {
+                      const orderSeller = String(o.seller || '').toLowerCase().trim();
+                      const metaSeller = String(m.vendedor || '').toLowerCase().trim();
+                      return orderSeller && metaSeller && orderSeller === metaSeller;
+                    }).reduce((sum, o) => sum + o.total, 0);
                     const prog = Math.min(100, (sellerTotal / m.valor) * 100);
                     return (
                       <div key={index} className="p-4 space-y-2">

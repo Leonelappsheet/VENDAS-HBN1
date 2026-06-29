@@ -82,12 +82,17 @@ export default function ClientSelection() {
 
   const filteredClients = clients.filter(c => {
     const query = search.toLowerCase();
+    const nameStr = String(c.name || '').toLowerCase();
+    const tradeNameStr = String(c.tradeName || '').toLowerCase();
+    const cnpjStr = String(c.cnpj || '');
+    const cityStr = String(c.city || '').toLowerCase();
+    const sellerStr = String(c.seller || '').toLowerCase();
     return (
-      c.name.toLowerCase().includes(query) ||
-      c.tradeName.toLowerCase().includes(query) ||
-      c.cnpj.includes(query) ||
-      c.city.toLowerCase().includes(query) ||
-      c.seller.toLowerCase().includes(query)
+      nameStr.includes(query) ||
+      tradeNameStr.includes(query) ||
+      cnpjStr.includes(query) ||
+      cityStr.includes(query) ||
+      sellerStr.includes(query)
     );
   });
 
@@ -215,8 +220,8 @@ export default function ClientSelection() {
                   const cartForClientSheet = sheetCarts.find(cart => 
                     (cart.id && String(cart.id).trim() === String(client.id).trim()) || 
                     (cart.clientName && (
-                      cart.clientName.toLowerCase().trim() === client.name.toLowerCase().trim() ||
-                      cart.clientName.toLowerCase().trim() === client.tradeName?.toLowerCase().trim()
+                      String(cart.clientName).toLowerCase().trim() === String(client.name || '').toLowerCase().trim() ||
+                      String(cart.clientName).toLowerCase().trim() === String(client.tradeName || '').toLowerCase().trim()
                     ))
                   );
 

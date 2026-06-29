@@ -388,11 +388,15 @@ export default function ImportPanel() {
                 };
 
                 // Find client in system
-                const matchedClient = allClients.find(c => 
-                  (cnpj && c.cnpj.replace(/[^\d]/g, '') === cnpj) ||
-                  c.name.toLowerCase().includes(name.toLowerCase()) ||
-                  name.toLowerCase().includes(c.name.toLowerCase())
-                );
+                const matchedClient = allClients.find(c => {
+                  const clientCnpj = String(c.cnpj || '').replace(/[^\d]/g, '');
+                  const clientName = String(c.name || '').toLowerCase();
+                  const searchName = String(name || '').toLowerCase();
+                  return (
+                    (cnpj && clientCnpj === cnpj) ||
+                    (clientName && searchName && (clientName.includes(searchName) || searchName.includes(clientName)))
+                  );
+                });
                 if (matchedClient) clientObj.client = matchedClient;
 
                 // Find products that belong to this client block

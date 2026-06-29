@@ -540,11 +540,15 @@ export default function ProductCatalog() {
       // Search Filter
       if (search) {
         const query = search.toLowerCase();
+        const descStr = String(p.description || '').toLowerCase();
+        const idStr = String(p.id || '').toLowerCase();
+        const eanStr = String(p.ean || '');
+        const manufacturerStr = String(p.manufacturer || '').toLowerCase();
         return (
-          p.description.toLowerCase().includes(query) ||
-          p.id.toLowerCase().includes(query) ||
-          p.ean.includes(query) ||
-          p.manufacturer.toLowerCase().includes(query)
+          descStr.includes(query) ||
+          idStr.includes(query) ||
+          eanStr.includes(query) ||
+          manufacturerStr.includes(query)
         );
       }
       

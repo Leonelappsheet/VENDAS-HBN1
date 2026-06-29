@@ -49,7 +49,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             
             // Auto-refresh profile in background
             dataService.getUsersFromSheets().then(users => {
-              const foundUser = users.find(u => u.username.toLowerCase() === parsed.uid.toLowerCase());
+              const foundUser = users.find(u => {
+                const userUsername = String(u.username || '').toLowerCase().trim();
+                const parsedUid = String(parsed.uid || '').toLowerCase().trim();
+                return userUsername && parsedUid && userUsername === parsedUid;
+              });
               if (foundUser) {
                 const updatedProfile = { 
                   ...parsed, 
@@ -84,10 +88,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const users = await dataService.getUsersFromSheets();
       
-      const foundUser = users.find(u => 
-        u.username.toLowerCase() === username.toLowerCase() && 
-        u.password === (password || '')
-      );
+      const foundUser = users.find(u => {
+        const uName = String(u.username || '').toLowerCase().trim();
+        const inputName = String(username || '').toLowerCase().trim();
+        const uPass = String(u.password !== undefined && u.password !== null ? u.password : '').trim();
+        const inputPass = String(password || '').trim();
+        return uName && inputName && uName === inputName && uPass === inputPass;
+      });
 
       if (foundUser) {
         // Sign in to Firebase Auth

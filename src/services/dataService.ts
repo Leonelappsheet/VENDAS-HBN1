@@ -589,14 +589,22 @@ export const dataService = {
       this.setCache(cacheKey, clients);
 
       if (!isAdmin && sellerName) {
-        clients = clients.filter((c: Client) => c.seller.toLowerCase().includes(sellerName.toLowerCase()));
+        const query = String(sellerName).toLowerCase().trim();
+        clients = clients.filter((c: Client) => {
+          const clientSeller = String(c.seller || '').toLowerCase().trim();
+          return clientSeller && clientSeller.includes(query);
+        });
       }
       return clients;
     } catch (error: any) {
       if (cachedClients) {
         let clients = cachedClients;
         if (!isAdmin && sellerName) {
-          clients = clients.filter((c: Client) => c.seller.toLowerCase().includes(sellerName.toLowerCase()));
+          const query = String(sellerName).toLowerCase().trim();
+          clients = clients.filter((c: Client) => {
+            const clientSeller = String(c.seller || '').toLowerCase().trim();
+            return clientSeller && clientSeller.includes(query);
+          });
         }
         return clients;
       }
