@@ -9,6 +9,7 @@ import { cn } from '../lib/utils';
 import { toast } from 'sonner';
 import { Visit } from '../types';
 import { getRegionalLabel } from '../constants/regionals';
+import { safeLocalStorage, safeSessionStorage } from '../lib/storage';
 
 import { ConfigWarning } from '../components/ConfigWarning';
 
@@ -20,7 +21,7 @@ export default function ClientSelection() {
   const [firestoreCarts, setFirestoreCarts] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('VENDAS_dark') === '1');
+  const [darkMode, setDarkMode] = useState(() => safeLocalStorage.getItem('VENDAS_dark') === '1');
   const [showProfile, setShowProfile] = useState(false);
   const [showVisitModal, setShowVisitModal] = useState<Client | null>(null);
   const [showMapModal, setShowMapModal] = useState<Client | null>(null);
@@ -72,10 +73,10 @@ export default function ClientSelection() {
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark');
-      localStorage.setItem('VENDAS_dark', '1');
+      safeLocalStorage.setItem('VENDAS_dark', '1');
     } else {
       document.documentElement.classList.remove('dark');
-      localStorage.setItem('VENDAS_dark', '0');
+      safeLocalStorage.setItem('VENDAS_dark', '0');
     }
   }, [darkMode]);
 
@@ -91,7 +92,7 @@ export default function ClientSelection() {
   });
 
   const handleSelectClient = (client: Client) => {
-    sessionStorage.setItem('selectedClient', JSON.stringify(client));
+    safeSessionStorage.setItem('selectedClient', JSON.stringify(client));
     navigate('/catalog');
   };
 

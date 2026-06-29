@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Download } from 'lucide-react';
+import { safeLocalStorage } from '../lib/storage';
 
 export default function InstallPrompt() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -27,7 +28,7 @@ export default function InstallPrompt() {
       
       // Delay showing the prompt a bit for better UX after login
       const timer = setTimeout(() => {
-        if (!checkStandalone() && !localStorage.getItem('pwa-prompt-dismissed')) {
+        if (!checkStandalone() && !safeLocalStorage.getItem('pwa-prompt-dismissed')) {
           setIsVisible(true);
         }
       }, 3000);
@@ -62,7 +63,7 @@ export default function InstallPrompt() {
   const handleDismiss = () => {
     setIsVisible(false);
     // Remember dismissal for 7 days
-    localStorage.setItem('pwa-prompt-dismissed', Date.now().toString());
+    safeLocalStorage.setItem('pwa-prompt-dismissed', Date.now().toString());
   };
 
   if (isStandalone || !isVisible) return null;

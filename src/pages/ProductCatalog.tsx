@@ -53,6 +53,7 @@ import autoTable from 'jspdf-autotable';
 import ExcelJS from 'exceljs';
 import { FileText, FileSpreadsheet, Download } from 'lucide-react';
 import { getRegionalLabel } from '../constants/regionals';
+import { safeLocalStorage, safeSessionStorage } from '../lib/storage';
 
 const applyCustomRounding = (val: number) => {
   const s = val.toFixed(10);
@@ -326,7 +327,7 @@ export default function ProductCatalog() {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
   const [products, setProducts] = useState<Product[]>([]);
-  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('VENDAS_dark') === '1');
+  const [darkMode, setDarkMode] = useState(() => safeLocalStorage.getItem('VENDAS_dark') === '1');
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'produtos' | 'ofertas' | 'lancamentos'>('produtos');
@@ -349,7 +350,7 @@ export default function ProductCatalog() {
   }, [searchInputValue]);
 
   const selectedClient: Client | null = useMemo(() => {
-    const saved = sessionStorage.getItem('selectedClient');
+    const saved = safeSessionStorage.getItem('selectedClient');
     return saved ? JSON.parse(saved) : null;
   }, []);
 
@@ -405,13 +406,13 @@ export default function ProductCatalog() {
           setCart(items);
         } else {
           // Fallback to localStorage if Firestore is empty
-          const saved = localStorage.getItem(cartKey);
+          const saved = safeLocalStorage.getItem(cartKey);
           if (saved) setCart(JSON.parse(saved));
         }
         setCartLoaded(true);
       });
     } else if (isPromotor) {
-      const saved = localStorage.getItem(cartKey);
+      const saved = safeLocalStorage.getItem(cartKey);
       if (saved) setCart(JSON.parse(saved));
       setCartLoaded(true);
     }
@@ -471,7 +472,7 @@ export default function ProductCatalog() {
   useEffect(() => {
     if (!cartLoaded) return;
     
-    localStorage.setItem(cartKey, JSON.stringify(cart));
+    safeLocalStorage.setItem(cartKey, JSON.stringify(cart));
     if (selectedClient) {
       dataService.saveCart(selectedClient.id, cart);
     }
@@ -2173,14 +2174,14 @@ export default function ProductCatalog() {
                           onClick={() => {
                             const client = allClients.find(c => c.id === pCart.clientId);
                             if (client) {
-                              sessionStorage.setItem('selectedClient', JSON.stringify(client));
+                              safeSessionStorage.setItem('selectedClient', JSON.stringify(client));
                               window.location.reload();
                             } else {
                               // If not in partial list, try to fetch it
                               dataService.getClients(undefined, true).then(fullList => {
                                 const fullClient = fullList.find(c => c.id === pCart.clientId);
                                 if (fullClient) {
-                                  sessionStorage.setItem('selectedClient', JSON.stringify(fullClient));
+                                  safeSessionStorage.setItem('selectedClient', JSON.stringify(fullClient));
                                   window.location.reload();
                                 }
                               });

@@ -3,6 +3,7 @@ import { UserProfile } from '../types';
 import { dataService } from '../services/dataService';
 import { auth } from '../lib/firebase';
 import { signInAnonymously } from 'firebase/auth';
+import { safeLocalStorage } from '../lib/storage';
 
 interface AuthContextType {
   profile: UserProfile | null;
@@ -22,7 +23,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         let savedProfile = null;
         try {
-          savedProfile = localStorage.getItem('VENDAS_profile');
+          savedProfile = safeLocalStorage.getItem('VENDAS_profile');
         } catch (storageError) {
           console.warn('LocalStorage access failed:', storageError);
         }
@@ -58,14 +59,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 };
                 setProfile(updatedProfile);
                 try {
-                  localStorage.setItem('VENDAS_profile', JSON.stringify(updatedProfile));
+                  safeLocalStorage.setItem('VENDAS_profile', JSON.stringify(updatedProfile));
                 } catch (e) {}
               }
             }).catch(() => {});
           } catch (e) {
             console.error('Profile parse error:', e);
             try {
-              localStorage.removeItem('VENDAS_profile');
+              safeLocalStorage.removeItem('VENDAS_profile');
             } catch (remError) {}
           }
         }
@@ -107,7 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           regional: foundUser.regional || 'TIMON-MA'
         };
         setProfile(newProfile);
-        localStorage.setItem('VENDAS_profile', JSON.stringify(newProfile));
+        safeLocalStorage.setItem('VENDAS_profile', JSON.stringify(newProfile));
         return true;
       }
       return false;
@@ -119,7 +120,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     setProfile(null);
-    localStorage.removeItem('VENDAS_profile');
+    safeLocalStorage.removeItem('VENDAS_profile');
     await auth.signOut();
   };
 

@@ -20,10 +20,11 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { getSpreadsheetId } from '../constants/regionals';
 import { normalizeEAN } from '../lib/utils';
+import { safeLocalStorage } from '../lib/storage';
 
 export const getApiUrl = (): string => {
   try {
-    const custom = localStorage.getItem('CUSTOM_API_URL');
+    const custom = safeLocalStorage.getItem('CUSTOM_API_URL');
     if (custom && custom.trim()) {
       return custom.trim().replace(/\/$/, '');
     }
@@ -53,7 +54,7 @@ export const getApiUrl = (): string => {
 
 export const getAppsScriptUrl = (): string => {
   try {
-    const custom = localStorage.getItem('CUSTOM_APPS_SCRIPT_URL');
+    const custom = safeLocalStorage.getItem('CUSTOM_APPS_SCRIPT_URL');
     if (custom && custom.trim()) {
       return custom.trim();
     }
@@ -292,7 +293,7 @@ export const dataService = {
   // Offline Caching Helpers
   getCache<T>(key: string): T | null {
     try {
-      const cached = localStorage.getItem(`VENDAS_cache_${key}`);
+      const cached = safeLocalStorage.getItem(`VENDAS_cache_${key}`);
       if (cached) {
         const { data, timestamp } = JSON.parse(cached);
         // Optional: Implement cache expiration if needed
@@ -306,7 +307,7 @@ export const dataService = {
 
   setCache<T>(key: string, data: T) {
     try {
-      localStorage.setItem(`VENDAS_cache_${key}`, JSON.stringify({
+      safeLocalStorage.setItem(`VENDAS_cache_${key}`, JSON.stringify({
         data,
         timestamp: Date.now()
       }));
@@ -314,7 +315,7 @@ export const dataService = {
       // LocalStorage might be full
       console.warn('Cache storage error (likely full):', e);
       if (e instanceof Error && e.name === 'QuotaExceededError') {
-        localStorage.removeItem(`VENDAS_cache_${key}`);
+        safeLocalStorage.removeItem(`VENDAS_cache_${key}`);
       }
     }
   },

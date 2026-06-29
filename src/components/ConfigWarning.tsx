@@ -3,6 +3,7 @@ import { AlertTriangle, ExternalLink, Copy, Check, Save, RotateCcw } from 'lucid
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { dataService, getAppsScriptUrl } from '../services/dataService';
+import { safeLocalStorage } from '../lib/storage';
 
 interface StatusData {
   ok: boolean;
@@ -30,7 +31,7 @@ export function ConfigWarning() {
       .catch(err => console.error('Error fetching status:', err));
 
     try {
-      const savedProfile = localStorage.getItem('VENDAS_profile');
+      const savedProfile = safeLocalStorage.getItem('VENDAS_profile');
       let regional = 'TIMON-MA';
       if (savedProfile) {
         const parsed = JSON.parse(savedProfile);
@@ -39,7 +40,7 @@ export function ConfigWarning() {
           setCurrentReg(parsed.regional);
         }
       }
-      const savedId = localStorage.getItem(`CUSTOM_SPREADSHEET_ID_${regional}`);
+      const savedId = safeLocalStorage.getItem(`CUSTOM_SPREADSHEET_ID_${regional}`);
       if (savedId) {
         setCustomId(savedId);
       }
@@ -66,10 +67,10 @@ export function ConfigWarning() {
 
     try {
       if (cleaned) {
-        localStorage.setItem(`CUSTOM_SPREADSHEET_ID_${currentReg}`, cleaned);
+        safeLocalStorage.setItem(`CUSTOM_SPREADSHEET_ID_${currentReg}`, cleaned);
         toast.success('ID da Planilha personalizado salvo com sucesso!');
       } else {
-        localStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${currentReg}`);
+        safeLocalStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${currentReg}`);
         toast.success('Restaurado para a planilha padrão!');
       }
       setTimeout(() => {
@@ -83,7 +84,7 @@ export function ConfigWarning() {
 
   const handleReset = () => {
     try {
-      localStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${currentReg}`);
+      safeLocalStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${currentReg}`);
       setCustomId('');
       toast.success('Restaurado para a planilha padrão!');
       setTimeout(() => {
@@ -150,7 +151,7 @@ export function ConfigWarning() {
                 >
                   <Save size={14} /> Salvar
                 </button>
-                {localStorage.getItem(`CUSTOM_SPREADSHEET_ID_${currentReg}`) && (
+                {safeLocalStorage.getItem(`CUSTOM_SPREADSHEET_ID_${currentReg}`) && (
                   <button
                     type="button"
                     onClick={handleReset}
