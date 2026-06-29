@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { dataService, getApiUrl } from '../services/dataService';
+import { dataService, getApiUrl, getAppsScriptUrl } from '../services/dataService';
 import { Order, Client } from '../types';
 import { 
   ChevronLeft, 
@@ -44,6 +44,13 @@ export default function AdminPanel() {
   const [customApiUrl, setCustomApiUrl] = useState(() => {
     try {
       return localStorage.getItem('CUSTOM_API_URL') || '';
+    } catch (e) {
+      return '';
+    }
+  });
+  const [customAppsScriptUrl, setCustomAppsScriptUrl] = useState(() => {
+    try {
+      return localStorage.getItem('CUSTOM_APPS_SCRIPT_URL') || '';
     } catch (e) {
       return '';
     }
@@ -211,6 +218,38 @@ export default function AdminPanel() {
       localStorage.removeItem('CUSTOM_API_URL');
       setCustomApiUrl('');
       toast.success('Restaurado para a API padrão!');
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleSaveCustomAppsScriptUrl = () => {
+    let cleaned = customAppsScriptUrl.trim();
+    try {
+      if (cleaned) {
+        localStorage.setItem('CUSTOM_APPS_SCRIPT_URL', cleaned);
+        toast.success('URL do Google Apps Script salva com sucesso!');
+      } else {
+        localStorage.removeItem('CUSTOM_APPS_SCRIPT_URL');
+        toast.success('Script do Google Apps Script desativado!');
+      }
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro ao salvar URL do Apps Script.');
+    }
+  };
+
+  const handleResetCustomAppsScriptUrl = () => {
+    try {
+      localStorage.removeItem('CUSTOM_APPS_SCRIPT_URL');
+      setCustomAppsScriptUrl('');
+      toast.success('Script do Google Apps Script desativado!');
       setTimeout(() => {
         window.location.reload();
       }, 1000);
@@ -926,40 +965,372 @@ export default function AdminPanel() {
                     </div>
                   </div>
 
-                  {/* Personalizar URL do Servidor Backend */}
-                  <div className="bg-orange-50/50 dark:bg-orange-950/10 p-5 rounded-2xl border border-orange-100/50 dark:border-orange-900/30 mb-6 font-sans">
-                    <p className="text-[10px] font-black text-orange-600 dark:text-orange-400 uppercase mb-1">⚙️ Servidor Backend & Integração de Fotos (Evita Erro 405)</p>
-                    <p className="text-[11px] text-gray-600 dark:text-gray-400 mb-2 leading-relaxed">
-                      Se o seu site está hospedado de forma estática (como o link <code>workers.dev</code>), ele não possui servidor para processar gravação direta de imagens na planilha. 
-                      Para resolver isso de forma 100% transparente, o sistema agora <strong>faz um redirecionamento inteligente automático</strong> para o servidor ativo na Cloud Run da AI Studio, garantindo que o envio de imagens funcione perfeitamente!
-                    </p>
-                    <div className="text-[10px] bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-2.5 rounded-xl mb-3 flex flex-col gap-1">
-                      <span className="font-bold text-gray-500">API Ativa no Momento:</span>
-                      <code className="text-orange-600 dark:text-orange-400 select-all break-all">{getApiUrl() || '(Mesma Origem / Localhost)'}</code>
+                  {/* Personalizar URL do Servidor Backend & Google Apps Script */}
+                  <div className="bg-orange-50/50 dark:bg-orange-950/10 p-6 rounded-3xl border border-orange-100/50 dark:border-orange-900/30 mb-6 font-sans space-y-6">
+                    <div>
+                      <h4 className="text-xs font-black text-orange-600 dark:text-orange-400 uppercase tracking-widest mb-1">
+                        ⚡ Conectividade para Domínio Externo (Evitar Erros de CORS / 405)
+                      </h4>
+                      <p className="text-[11px] text-gray-600 dark:text-gray-400 leading-relaxed">
+                        Como seu site está hospedado em <code>vendashbn1.leonelamorimm.workers.dev</code> (um ambiente estático do Cloudflare), ele precisa de uma ponte ativa para poder atualizar imagens de produtos, editar clientes ou salvar pedidos diretamente no Google Sheets.
+                      </p>
+                      <p className="text-[11px] text-red-500 font-medium mt-1 leading-relaxed">
+                        ⚠️ <strong>Nota:</strong> A URL provisória do AI Studio (<code>ais-pre-...run.app</code>) é protegida por login privado e gera erros de CORS ou redirecionamento ao ser acessada de fora. Escolha uma das duas soluções definitivas e seguras abaixo:
+                      </p>
                     </div>
-                    <div className="flex flex-col sm:flex-row gap-2">
-                      <input
-                        type="text"
-                        placeholder="Ex: https://vendas-hbn1.netlify.app (Se desejar usar Netlify próprio)"
-                        value={customApiUrl}
-                        onChange={(e) => setCustomApiUrl(e.target.value)}
-                        className="flex-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-orange-500 dark:text-white"
-                      />
-                      <div className="flex gap-2">
-                        <button
-                          onClick={handleSaveCustomApiUrl}
-                          className="bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors whitespace-nowrap cursor-pointer"
-                        >
-                          Salvar URL
-                        </button>
-                        {localStorage.getItem('CUSTOM_API_URL') && (
-                          <button
-                            onClick={handleResetCustomApiUrl}
-                            className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors cursor-pointer"
-                          >
-                            Resetar
-                          </button>
+
+                    {/* Método 1: Google Apps Script */}
+                    <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl space-y-4">
+                      <div>
+                        <span className="inline-block text-[9px] font-black bg-orange-100 text-orange-700 px-2 py-0.5 rounded mb-1 uppercase">Método 1 (Altamente Recomendado)</span>
+                        <h5 className="font-bold text-xs text-gray-950 dark:text-white">🚀 Integração Direta via Google Apps Script (Zero Servidor)</h5>
+                        <p className="text-[10px] text-gray-500 mt-0.5">
+                          Rode um script oficial do Google dentro da sua própria planilha que recebe as atualizações instantaneamente, de graça e sem limite de banda!
+                        </p>
+                      </div>
+
+                      <div className="text-[10px] bg-gray-50 dark:bg-gray-800 p-2.5 rounded-xl flex flex-col gap-1">
+                        <span className="font-bold text-gray-500">Status do Apps Script:</span>
+                        <code className="text-xs font-mono break-all text-orange-600 dark:text-orange-400">
+                          {getAppsScriptUrl() ? '✅ Ativo e Integrado!' : '❌ Inativo (Usando API Backend)'}
+                        </code>
+                        {getAppsScriptUrl() && (
+                          <span className="text-[8px] font-bold text-gray-400 truncate mt-0.5 select-all">{getAppsScriptUrl()}</span>
                         )}
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          placeholder="Cole a URL do App da Web fornecida pelo Google Apps Script..."
+                          value={customAppsScriptUrl}
+                          onChange={(e) => setCustomAppsScriptUrl(e.target.value)}
+                          className="flex-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-orange-500 dark:text-white"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleSaveCustomAppsScriptUrl}
+                            className="bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors whitespace-nowrap cursor-pointer"
+                          >
+                            Salvar Script
+                          </button>
+                          {localStorage.getItem('CUSTOM_APPS_SCRIPT_URL') && (
+                            <button
+                              onClick={handleResetCustomAppsScriptUrl}
+                              className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors cursor-pointer"
+                            >
+                              Desativar
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Tutorial Expansível */}
+                      <details className="group border-t border-gray-100 dark:border-gray-800 pt-3">
+                        <summary className="list-none flex items-center justify-between text-[11px] font-bold text-orange-600 dark:text-orange-400 cursor-pointer hover:underline">
+                          <span>📖 Como criar seu Google Apps Script em 1 minuto</span>
+                          <span className="transition-transform group-open:rotate-180">▼</span>
+                        </summary>
+                        <div className="mt-3 text-[10px] text-gray-600 dark:text-gray-400 space-y-2 leading-relaxed font-sans">
+                          <p>
+                            Siga estes simples passos para ativar a conexão direta:
+                          </p>
+                          <ol className="list-decimal pl-4 space-y-1">
+                            <li>Abra sua planilha do Google Sheets de vendas.</li>
+                            <li>No menu superior, clique em <strong>Extensões</strong> {"->"} <strong>Apps Script</strong>.</li>
+                            <li>Apague qualquer código que estiver lá e cole todo o código cinza abaixo.</li>
+                            <li>Clique no botão do <strong>Disquete (Salvar Projeto)</strong>.</li>
+                            <li>Clique em <strong>Implantar</strong> (no canto superior direito) {"->"} <strong>Nova Implantação</strong>.</li>
+                            <li>No ícone da engrenagem, certifique-se de que está selecionado <strong>App da Web</strong>.</li>
+                            <li>Configure:
+                              <ul className="list-disc pl-4 mt-0.5">
+                                <li>Executar como: <strong>Eu</strong> (Sua conta Google)</li>
+                                <li>Quem tem acesso: <strong>Qualquer pessoa</strong></li>
+                              </ul>
+                            </li>
+                            <li>Clique em <strong>Implantar</strong>, autorize o acesso caso o Google peça permissão, e copie o link longo gerado (<strong>URL do App da Web</strong>). Cole no campo acima e salve!</li>
+                          </ol>
+
+                          <div className="relative mt-2">
+                            <p className="font-bold text-gray-700 dark:text-gray-300 mb-1">Código para colar no Apps Script:</p>
+                            <pre className="p-3 bg-gray-50 dark:bg-gray-950 rounded-xl overflow-x-auto text-[9px] text-gray-700 dark:text-gray-300 font-mono select-all max-h-[250px]">
+{`function doPost(e) {
+  var corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400"
+  };
+  
+  if (e.httpMethod === "OPTIONS") {
+    return ContentService.createTextOutput("")
+      .setMimeType(ContentService.MimeType.TEXT)
+      .setHeaders(corsHeaders);
+  }
+  
+  try {
+    var data = JSON.parse(e.postData.contents);
+    var sheetId = data.spreadsheetId;
+    var action = data.action;
+    
+    if (!sheetId) {
+      return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Faltando ID da planilha"}))
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
+    }
+    
+    var ss = SpreadsheetApp.openById(sheetId);
+    
+    if (action === "update-image") {
+      var id = data.id;
+      var imageUrl = data.imageUrl;
+      var sheetName = data.sheetName || "Produtos";
+      var targetSheet = ss.getSheetByName(sheetName);
+      if (!targetSheet) {
+        return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Aba '" + sheetName + "' não encontrada"}))
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
+      }
+      
+      var values = targetSheet.getDataRange().getValues();
+      var headers = values[0];
+      var idColIdx = -1;
+      var photoColIdx = -1;
+      
+      function normalize(str) {
+        return String(str || "").trim().toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "");
+      }
+      
+      for (var i = 0; i < headers.length; i++) {
+        var h = normalize(headers[i]);
+        if (["id", "idproduto", "codigo", "cod"].indexOf(h) !== -1) idColIdx = i;
+        if (["foto", "imagem", "url", "photo", "link", "img"].indexOf(h) !== -1 || h.indexOf("foto") !== -1) photoColIdx = i;
+      }
+      
+      if (idColIdx === -1) {
+        return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Coluna ID não encontrada"}))
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
+      }
+      
+      if (photoColIdx === -1) {
+        photoColIdx = headers.length;
+        targetSheet.getRange(1, photoColIdx + 1).setValue("Foto");
+      }
+      
+      for (var row = 1; row < values.length; row++) {
+        if (normalize(values[row][idColIdx]) === normalize(id)) {
+          targetSheet.getRange(row + 1, photoColIdx + 1).setValue(imageUrl);
+          return ContentService.createTextOutput(JSON.stringify({sucesso: true}))
+            .setMimeType(ContentService.MimeType.JSON)
+            .setHeaders(corsHeaders);
+        }
+      }
+      
+      return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "ID não encontrado"}))
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
+    }
+    
+    if (action === "update-client") {
+      var client = data.client;
+      var targetSheet = ss.getSheetByName("Clientes");
+      if (!targetSheet) {
+        return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Aba Clientes não encontrada"}))
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
+      }
+      
+      var values = targetSheet.getDataRange().getValues();
+      var headers = values[0];
+      var cnpjColIdx = -1;
+      
+      function normalize(str) {
+        return String(str || "").trim().toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "");
+      }
+      
+      for (var i = 0; i < headers.length; i++) {
+        var h = normalize(headers[i]);
+        if (h === "cnpj") cnpjColIdx = i;
+      }
+      
+      if (cnpjColIdx === -1) {
+        return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Coluna CNPJ não encontrada"}))
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
+      }
+      
+      var cleanCnpj = normalize(client.cnpj);
+      for (var row = 1; row < values.length; row++) {
+        if (normalize(values[row][cnpjColIdx]) === cleanCnpj) {
+          for (var col = 0; col < headers.length; col++) {
+            var h = normalize(headers[col]);
+            if (h === "razaosocial" || h === "nome") targetSheet.getRange(row + 1, col + 1).setValue(client.name);
+            else if (h === "nomefantasia") targetSheet.getRange(row + 1, col + 1).setValue(client.tradeName);
+            else if (h === "comprador") targetSheet.getRange(row + 1, col + 1).setValue(client.buyer);
+            else if (h === "celular" || h === "whatsapp" || h === "telefone") targetSheet.getRange(row + 1, col + 1).setValue(client.phone);
+            else if (h === "email") targetSheet.getRange(row + 1, col + 1).setValue(client.email);
+            else if (h === "cidade") targetSheet.getRange(row + 1, col + 1).setValue(client.city);
+            else if (h === "estado" || h === "uf") targetSheet.getRange(row + 1, col + 1).setValue(client.state);
+            else if (h === "vendedor") targetSheet.getRange(row + 1, col + 1).setValue(client.seller);
+          }
+          return ContentService.createTextOutput(JSON.stringify({sucesso: true}))
+            .setMimeType(ContentService.MimeType.JSON)
+            .setHeaders(corsHeaders);
+        }
+      }
+      
+      return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Cliente não encontrado"}))
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
+    }
+    
+    if (action === "save-order") {
+      var order = data.order;
+      var targetSheet = ss.getSheetByName("Pedidos") || ss.getSheetByName("pedidos") || ss.getSheetByName("orders");
+      if (!targetSheet) {
+        targetSheet = ss.insertSheet("Pedidos");
+        targetSheet.appendRow(["ID", "Cliente", "CNPJ", "Data", "Vendedor", "Total", "Itens", "Observação", "Status"]);
+      }
+      
+      var itemsStr = "";
+      if (Array.isArray(order.items)) {
+        itemsStr = order.items.map(function(item) {
+          return item.quantity + "x [" + item.productId + "] " + item.description + " (" + item.price + ")";
+        }).join(" | ");
+      }
+      
+      targetSheet.appendRow([
+        order.id,
+        order.clientName,
+        order.clientCnpj,
+        order.date,
+        order.seller,
+        order.total,
+        itemsStr,
+        order.observation || "",
+        order.status || "Pendente"
+      ]);
+      
+      return ContentService.createTextOutput(JSON.stringify({sucesso: true}))
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
+    }
+    
+    if (action === "update-catalog") {
+      var industria = data.industria;
+      var dados = data.dados;
+      
+      var sheetsToSync = ["Produtos", "Ofertas", "Lancamentos"];
+      var INDUSTRY_MAPPINGS = {
+        'DANONE': { id: 1, ean: 0, desc: 3, stock: 9, price: 5, discount: 4, final: 7 },
+        'UNILEVER': { id: 1, ean: 2, desc: 3, stock: 7, price: 8, discount: 11, final: 12 }, 
+        'KIMBERLY': { id: 1, ean: 1, desc: 2, stock: 3, price: 4, discount: 5, final: 6 },
+        'KENVUE': { id: 5, ean: 3, desc: 4, stock: 13, price: 6, discount: 7, final: 8 },
+        'OMRON': { id: 5, ean: 3, desc: 4, stock: 13, price: 6, discount: 7, final: 8 }
+      };
+      
+      var mapping = INDUSTRY_MAPPINGS[industria.toUpperCase()];
+      if (!mapping) {
+        return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Mapeamento da indústria " + industria + " não encontrado"}))
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
+      }
+      
+      for (var s = 0; s < sheetsToSync.length; s++) {
+        var sheetName = sheetsToSync[s];
+        var targetSheet = ss.getSheetByName(sheetName);
+        if (!targetSheet) continue;
+        
+        var values = targetSheet.getDataRange().getValues();
+        var idColIdx = 0;
+        var eanColIdx = 1;
+        
+        for (var d = 0; d < dados.length; d++) {
+          var item = dados[d];
+          var itemId = String(item[mapping.id] || "").trim();
+          var itemEan = String(item[mapping.ean] || "").trim();
+          
+          if (!itemId && !itemEan) continue;
+          
+          for (var r = 1; r < values.length; r++) {
+            var rowId = String(values[r][idColIdx]).trim();
+            var rowEan = String(values[r][eanColIdx]).trim();
+            
+            if ((itemId && rowId === itemId) || (itemEan && rowEan === itemEan)) {
+              var stockVal = Number(item[mapping.stock]) || 0;
+              var priceVal = Number(item[mapping.final]) || Number(item[mapping.price]) || 0;
+              
+              targetSheet.getRange(r + 1, 4).setValue(stockVal);
+              targetSheet.getRange(r + 1, 5).setValue(priceVal);
+              break;
+            }
+          }
+        }
+      }
+      
+      return ContentService.createTextOutput(JSON.stringify({sucesso: true}))
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Ação não reconhecida"}))
+      .setMimeType(ContentService.MimeType.JSON)
+      .setHeaders(corsHeaders);
+      
+  } catch(err) {
+    return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: err.toString()}))
+      .setMimeType(ContentService.MimeType.JSON)
+      .setHeaders(corsHeaders);
+  }
+}`}
+                            </pre>
+                          </div>
+                        </div>
+                      </details>
+                    </div>
+
+                    {/* Método 2: Servidor de API Própria */}
+                    <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl space-y-4">
+                      <div>
+                        <span className="inline-block text-[9px] font-black bg-gray-100 text-gray-700 px-2 py-0.5 rounded mb-1 uppercase">Método 2 (Opção Alternativa)</span>
+                        <h5 className="font-bold text-xs text-gray-950 dark:text-white">⚙️ Hospedar seu próprio Backend API (Netlify / Vercel)</h5>
+                        <p className="text-[10px] text-gray-500 mt-0.5">
+                          Implante a API Node.js/Express integrada neste projeto no Netlify em apenas 1 minuto (guia no arquivo <code>DEPLOY_NETLIFY.md</code>).
+                        </p>
+                      </div>
+
+                      <div className="text-[10px] bg-gray-50 dark:bg-gray-800 p-2.5 rounded-xl flex flex-col gap-1">
+                        <span className="font-bold text-gray-500">API Ativa no Momento:</span>
+                        <code className="text-xs font-mono break-all text-orange-600 dark:text-orange-400 select-all">
+                          {getApiUrl() || '(Mesma Origem / Localhost)'}
+                        </code>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          placeholder="Ex: https://vendas-hbn1.netlify.app (Sua URL da API no Netlify)"
+                          value={customApiUrl}
+                          onChange={(e) => setCustomApiUrl(e.target.value)}
+                          className="flex-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-orange-500 dark:text-white"
+                        />
+                        <div className="flex gap-2">
+                          <button
+                            onClick={handleSaveCustomApiUrl}
+                            className="bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors whitespace-nowrap cursor-pointer"
+                          >
+                            Salvar API
+                          </button>
+                          {localStorage.getItem('CUSTOM_API_URL') && (
+                            <button
+                              onClick={handleResetCustomApiUrl}
+                              className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors cursor-pointer"
+                            >
+                              Resetar
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>

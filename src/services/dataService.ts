@@ -51,6 +51,16 @@ export const getApiUrl = (): string => {
   return '';
 };
 
+export const getAppsScriptUrl = (): string => {
+  try {
+    const custom = localStorage.getItem('CUSTOM_APPS_SCRIPT_URL');
+    if (custom && custom.trim()) {
+      return custom.trim();
+    }
+  } catch (e) {}
+  return '';
+};
+
 function isHtmlResponse(data: any): boolean {
   if (typeof data === 'string') {
     const trimmed = data.trim().toLowerCase();
@@ -581,6 +591,25 @@ export const dataService = {
   },
 
   async updateClientInSheet(client: Client) {
+    const appsScriptUrl = getAppsScriptUrl();
+    if (appsScriptUrl) {
+      try {
+        const response = await axios.post(appsScriptUrl, {
+          action: 'update-client',
+          spreadsheetId: getSpreadsheetId(currentRegional),
+          client
+        });
+        if (response.data?.sucesso || response.data?.success) {
+          return { sucesso: true };
+        }
+        throw new Error(response.data?.error || 'Erro no script do Google');
+      } catch (error: any) {
+        console.error('Error updating client via Apps Script:', error);
+        toast.error(`Erro ao atualizar cliente: ${error.message}`);
+        return null;
+      }
+    }
+
     try {
       const response = await axios.post(`${getApiUrl()}/api/client/update`, client, {
         headers: this.getHeaders()
@@ -602,6 +631,31 @@ export const dataService = {
   },
 
   async updateCatalogInSheets(industria: string, dados: any[], defaultExpiryDate?: string | null) {
+    const appsScriptUrl = getAppsScriptUrl();
+    if (appsScriptUrl) {
+      try {
+        toast.loading('Processando catálogo no Google Sheets via Apps Script...', { id: 'update-catalog-progress' });
+        const response = await axios.post(appsScriptUrl, {
+          action: 'update-catalog',
+          spreadsheetId: getSpreadsheetId(currentRegional),
+          industria,
+          dados,
+          defaultExpiryDate
+        });
+        toast.dismiss('update-catalog-progress');
+        if (response.data?.sucesso || response.data?.success) {
+          toast.success('Catálogo atualizado com sucesso via Apps Script!');
+          return { sucesso: true };
+        }
+        throw new Error(response.data?.error || 'Erro no script do Google');
+      } catch (error: any) {
+        toast.dismiss('update-catalog-progress');
+        console.error('Error updating catalog via Apps Script:', error);
+        toast.error(`Erro ao atualizar catálogo: ${error.message}`);
+        return null;
+      }
+    }
+
     try {
       const response = await axios.post(`${getApiUrl()}/api/catalog/update`, { industria, dados, defaultExpiryDate }, {
         headers: this.getHeaders()
@@ -1004,6 +1058,26 @@ export const dataService = {
 
   async updateProductImage(productId: string, imageUrl: string, type: 'normal' | 'offer' | 'new') {
     const sheetName = type === 'offer' ? 'Ofertas' : type === 'new' ? 'Lancamentos' : 'Produtos';
+    const appsScriptUrl = getAppsScriptUrl();
+    if (appsScriptUrl) {
+      try {
+        const response = await axios.post(appsScriptUrl, {
+          action: 'update-image',
+          spreadsheetId: getSpreadsheetId(currentRegional),
+          id: productId,
+          imageUrl,
+          sheetName
+        });
+        if (response.data?.sucesso || response.data?.success) {
+          return { success: true };
+        }
+        throw new Error(response.data?.error || 'Erro no script do Google');
+      } catch (error: any) {
+        console.error('Error updating image via Apps Script:', error);
+        return { success: false, error: error.message };
+      }
+    }
+
     try {
       const response = await axios.post(`${getApiUrl()}/api/product/update-image`, {
         id: productId,
