@@ -41,6 +41,13 @@ export default function AdminPanel() {
   const [allMetas, setAllMetas] = useState<any[]>([]);
   const [sheetsStatus, setSheetsStatus] = useState<any>(null);
   const [adminCustomId, setAdminCustomId] = useState('');
+  const [customApiUrl, setCustomApiUrl] = useState(() => {
+    try {
+      return localStorage.getItem('CUSTOM_API_URL') || '';
+    } catch (e) {
+      return '';
+    }
+  });
 
   useEffect(() => {
     if (!profile) return;
@@ -172,6 +179,38 @@ export default function AdminPanel() {
       localStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${profile.regional || 'TIMON-MA'}`);
       setAdminCustomId('');
       toast.success('Restaurado para a planilha padrão!');
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleSaveCustomApiUrl = () => {
+    let cleaned = customApiUrl.trim().replace(/\/$/, '');
+    try {
+      if (cleaned) {
+        localStorage.setItem('CUSTOM_API_URL', cleaned);
+        toast.success('URL da API personalizada salva com sucesso!');
+      } else {
+        localStorage.removeItem('CUSTOM_API_URL');
+        toast.success('Restaurado para a API padrão!');
+      }
+      setTimeout(() => {
+        window.location.reload();
+      }, 1000);
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro ao salvar URL da API.');
+    }
+  };
+
+  const handleResetCustomApiUrl = () => {
+    try {
+      localStorage.removeItem('CUSTOM_API_URL');
+      setCustomApiUrl('');
+      toast.success('Restaurado para a API padrão!');
       setTimeout(() => {
         window.location.reload();
       }, 1000);
@@ -878,6 +917,39 @@ export default function AdminPanel() {
                         {localStorage.getItem(`CUSTOM_SPREADSHEET_ID_${profile?.regional || 'TIMON-MA'}`) && (
                           <button
                             onClick={handleResetAdminCustomId}
+                            className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors"
+                          >
+                            Resetar
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Personalizar URL do Servidor Backend */}
+                  <div className="bg-orange-50/50 dark:bg-orange-950/10 p-5 rounded-2xl border border-orange-100/50 dark:border-orange-900/30 mb-6 font-sans">
+                    <p className="text-[10px] font-black text-orange-600 dark:text-orange-400 uppercase mb-1">⚙️ URL da API do Servidor Backend (Evita Erro 405)</p>
+                    <p className="text-[11px] text-gray-600 dark:text-gray-400 mb-3 leading-relaxed">
+                      Se o seu site está hospedado no <strong>Cloudflare Workers / Pages</strong> (como o seu link <code>leonelamorimm.workers.dev</code>), ele funciona de forma estática. Para que operações como salvar fotos de produtos, atualizar dados de clientes ou alterar catálogos funcionem sem dar <strong>Erro 405 (Method Not Allowed)</strong>, é necessário hospedar o backend no <strong>Netlify</strong> (conforme o guia <code>DEPLOY_NETLIFY.md</code>) e colar o link da sua API do Netlify aqui.
+                    </p>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="text"
+                        placeholder="Ex: https://vendas-hbn1.netlify.app"
+                        value={customApiUrl}
+                        onChange={(e) => setCustomApiUrl(e.target.value)}
+                        className="flex-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-orange-500 dark:text-white"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleSaveCustomApiUrl}
+                          className="bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors whitespace-nowrap"
+                        >
+                          Salvar URL
+                        </button>
+                        {localStorage.getItem('CUSTOM_API_URL') && (
+                          <button
+                            onClick={handleResetCustomApiUrl}
                             className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors"
                           >
                             Resetar

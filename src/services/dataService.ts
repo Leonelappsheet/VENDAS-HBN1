@@ -21,7 +21,15 @@ import { toast } from 'sonner';
 import { getSpreadsheetId } from '../constants/regionals';
 import { normalizeEAN } from '../lib/utils';
 
-const API_URL = import.meta.env.VITE_API_URL || ''; // Relative to current origin or custom backend URL
+export const getApiUrl = (): string => {
+  try {
+    const custom = localStorage.getItem('CUSTOM_API_URL');
+    if (custom && custom.trim()) {
+      return custom.trim().replace(/\/$/, '');
+    }
+  } catch (e) {}
+  return (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+};
 
 function isHtmlResponse(data: any): boolean {
   if (typeof data === 'string') {
@@ -175,16 +183,17 @@ async function fetchDirectlyFromGoogleSheets(sheetName: string, customSpreadshee
 }
 
 async function safeFetch(endpoint: string, sheetName: string, options: any = {}): Promise<any> {
+  const apiUrl = getApiUrl();
   try {
     if (endpoint.includes('/api/status')) {
-      const response = await axios.get(`${API_URL}${endpoint}`, { ...options, timeout: 5000 });
+      const response = await axios.get(`${apiUrl}${endpoint}`, { ...options, timeout: 5000 });
       if (isHtmlResponse(response.data)) {
         throw new Error('Backend returned HTML instead of status JSON');
       }
       return response;
     }
 
-    const response = await axios.get(`${API_URL}${endpoint}`, {
+    const response = await axios.get(`${apiUrl}${endpoint}`, {
       ...options,
       timeout: 6000 // Fallback fast if server is unresponsive
     });
@@ -553,7 +562,7 @@ export const dataService = {
 
   async updateClientInSheet(client: Client) {
     try {
-      const response = await axios.post(`${API_URL}/api/client/update`, client, {
+      const response = await axios.post(`${getApiUrl()}/api/client/update`, client, {
         headers: this.getHeaders()
       });
       return response.data;
@@ -574,7 +583,7 @@ export const dataService = {
 
   async updateCatalogInSheets(industria: string, dados: any[], defaultExpiryDate?: string | null) {
     try {
-      const response = await axios.post(`${API_URL}/api/catalog/update`, { industria, dados, defaultExpiryDate }, {
+      const response = await axios.post(`${getApiUrl()}/api/catalog/update`, { industria, dados, defaultExpiryDate }, {
         headers: this.getHeaders()
       });
       return response.data;
@@ -602,7 +611,7 @@ export const dataService = {
       
       // 2. Try to save to Google Sheets (external sync)
       try {
-        await axios.post(`${API_URL}/api/order`, orderWithId, {
+        await axios.post(`${getApiUrl()}/api/order`, orderWithId, {
           headers: this.getHeaders(),
           timeout: 5000 // Fast fail for offline
         });
@@ -976,7 +985,7 @@ export const dataService = {
   async updateProductImage(productId: string, imageUrl: string, type: 'normal' | 'offer' | 'new') {
     const sheetName = type === 'offer' ? 'Ofertas' : type === 'new' ? 'Lancamentos' : 'Produtos';
     try {
-      const response = await axios.post(`${API_URL}/api/product/update-image`, {
+      const response = await axios.post(`${getApiUrl()}/api/product/update-image`, {
         id: productId,
         imageUrl,
         sheetName
