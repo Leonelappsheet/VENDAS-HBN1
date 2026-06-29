@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AlertTriangle, ExternalLink, Copy, Check, Save, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
+import { dataService, getAppsScriptUrl } from '../services/dataService';
 
 interface StatusData {
   ok: boolean;
@@ -20,8 +21,11 @@ export function ConfigWarning() {
   const [currentReg, setCurrentReg] = useState('TIMON-MA');
 
   useEffect(() => {
-    fetch('/api/status')
-      .then(res => res.json())
+    if (getAppsScriptUrl()) {
+      return; // Skip loading if Google Apps Script is configured
+    }
+
+    dataService.getStatus()
       .then(data => setStatus(data))
       .catch(err => console.error('Error fetching status:', err));
 
@@ -90,6 +94,7 @@ export function ConfigWarning() {
     }
   };
 
+  if (getAppsScriptUrl()) return null;
   if (!status || status.ok) return null;
 
   return (

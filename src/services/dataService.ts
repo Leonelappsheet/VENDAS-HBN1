@@ -273,6 +273,22 @@ export const dataService = {
     };
   },
 
+  async getStatus() {
+    try {
+      const response = await safeFetch('/api/status', '', {
+        headers: this.getHeaders()
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('Error fetching sheets status via safeFetch:', error);
+      return {
+        ok: false,
+        spreadsheetId: getSpreadsheetId(currentRegional),
+        spreadsheetError: 'Não foi possível conectar ao servidor de API backend. Verifique a URL do Netlify ou use o Google Apps Script.'
+      };
+    }
+  },
+
   // Offline Caching Helpers
   getCache<T>(key: string): T | null {
     try {

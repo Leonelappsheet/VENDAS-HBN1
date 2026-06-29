@@ -78,8 +78,7 @@ export default function AdminPanel() {
       setSheetCarts(sheetCartsData || []);
 
       try {
-        const response = await fetch('/api/status');
-        const status = await response.json();
+        const status = await dataService.getStatus();
         setSheetsStatus(status);
       } catch (e) {}
 
@@ -895,9 +894,9 @@ export default function AdminPanel() {
                       <h3 className="font-black text-lg text-gray-900 dark:text-white">Status da Conexão</h3>
                       <p className="text-xs text-gray-500">Google Sheets API</p>
                     </div>
-                    {sheetsStatus?.connected || sheetsStatus?.ok ? (
+                    {sheetsStatus?.connected || sheetsStatus?.ok || getAppsScriptUrl() ? (
                       <div className="flex items-center gap-2 bg-green-100 text-green-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">
-                        <CheckCircle2 size={12} /> Conectado
+                        <CheckCircle2 size={12} /> {getAppsScriptUrl() ? 'Conectado (Apps Script)' : 'Conectado'}
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 bg-red-100 text-red-600 px-3 py-1 rounded-full text-[10px] font-black uppercase">
