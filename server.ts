@@ -108,15 +108,32 @@ apiRouter.post("/product/update-image", async (req, res) => {
 
     const sheets = await getSheetsClient();
 
+    // Retrieve sheet list and perform robust case & accent insensitive mapping
+    let availableSheets: string[] = [];
+    try {
+      const spreadsheet = await sheets.spreadsheets.get({
+        spreadsheetId,
+      });
+      availableSheets = spreadsheet.data.sheets?.map((s: any) => s.properties.title) || [];
+    } catch (err: any) {
+      console.error("Error retrieving spreadsheet in update-image:", err.message);
+      return res.status(500).json({ error: `Erro ao obter abas da planilha: ${err.message}` });
+    }
+
+    const normalizeStr = (str: string) => 
+      String(str || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+    const targetSheet = availableSheets.find(s => normalizeStr(s) === normalizeStr(sheetName)) || sheetName;
+
     // 1. Get current data to find the row
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${sheetName}!A:Z`,
+      range: `${targetSheet}!A:Z`,
     });
 
     const rows = response.data.values || [];
     if (rows.length === 0) {
-      return res.status(404).json({ error: `Sheet "${sheetName}" not found or empty.` });
+      return res.status(404).json({ error: `Sheet "${targetSheet}" not found or empty.` });
     }
 
     const headers = rows[0];
@@ -131,14 +148,14 @@ apiRouter.post("/product/update-image", async (req, res) => {
     });
 
     if (idIdx === -1) {
-      return res.status(500).json({ error: `Coluna ID não encontrada na sheet "${sheetName}".` });
+      return res.status(500).json({ error: `Coluna ID não encontrada na sheet "${targetSheet}".` });
     }
 
     // 2. Find the row index
     const rowIdx = rows.findIndex((row, idx) => idx > 0 && String(row[idIdx] || "").trim() === String(id).trim());
 
     if (rowIdx === -1) {
-      return res.status(404).json({ error: `Produto ID "${id}" não encontrado na sheet "${sheetName}".` });
+      return res.status(404).json({ error: `Produto ID "${id}" não encontrado na sheet "${targetSheet}".` });
     }
 
     // 3. Update the row
@@ -160,7 +177,7 @@ apiRouter.post("/product/update-image", async (req, res) => {
       // Add "Foto" header
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${sheetName}!${colLetter}1`,
+        range: `${targetSheet}!${colLetter}1`,
         valueInputOption: "RAW",
         requestBody: {
           values: [["Foto"]],
@@ -173,7 +190,7 @@ apiRouter.post("/product/update-image", async (req, res) => {
     
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${sheetName}!${colLetter}${sheetRowNumber}`,
+      range: `${targetSheet}!${colLetter}${sheetRowNumber}`,
       valueInputOption: "RAW",
       requestBody: {
         values: [[imageUrl]],

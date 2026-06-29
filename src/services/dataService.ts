@@ -983,10 +983,11 @@ export const dataService = {
       }, {
         headers: this.getHeaders()
       });
-      return response.data.success;
-    } catch (error) {
+      return { success: !!response.data.success };
+    } catch (error: any) {
       console.error('Error updating product image:', error);
-      return false;
+      const errorMsg = error.response?.data?.error || error.response?.data?.message || error.message || 'Erro desconhecido';
+      return { success: false, error: errorMsg };
     }
   },
 

@@ -103,7 +103,7 @@ interface ProductCardProps {
   onUpdateQuantity: (id: string, delta: number) => void;
   onSetQuantityDirectly: (id: string, value: number) => void;
   onToggleFavorite: (product: Product) => void;
-  onSetZoomImage: (url: string) => void;
+  onSetZoomImage: (product: Product) => void;
   onSetUpdatingImageProduct: (product: Product) => void;
 }
 
@@ -159,7 +159,7 @@ const ProductCard = React.memo<ProductCardProps>(({
       </div>
 
       {/* Product Image */}
-      <div className="aspect-[4/4] w-full bg-white p-1.5 sm:p-4 relative cursor-zoom-in flex-none overflow-hidden flex items-center justify-center" onClick={() => onSetZoomImage(product.photo)}>
+      <div className="aspect-[4/4] w-full bg-white p-1.5 sm:p-4 relative cursor-zoom-in flex-none overflow-hidden flex items-center justify-center" onClick={() => onSetZoomImage(product)}>
         <img 
           src={product.photo || `https://placehold.co/400x400/FFFFFF/CCCCCC?text=Sem+Foto`} 
           alt={product.description} 
@@ -371,6 +371,7 @@ export default function ProductCatalog() {
   const [lastOrder, setLastOrder] = useState<any>(null);
   const [lastOrderItems, setLastOrderItems] = useState<OrderItem[]>([]);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [selectedProductDetails, setSelectedProductDetails] = useState<Product | null>(null);
   const [updatingImageProduct, setUpdatingImageProduct] = useState<Product | null>(null);
   const [searchImages, setSearchImages] = useState<string[]>([]);
   const [searchingImages, setSearchingImages] = useState(false);
@@ -649,8 +650,8 @@ export default function ProductCatalog() {
     await dataService.toggleFavorite(selectedClient.id, product.id, product.description, profile.name);
   }, [selectedClient, profile]);
 
-  const handleSetZoomImage = useCallback((url: string) => {
-    setSelectedImage(url);
+  const handleSetZoomImage = useCallback((product: Product) => {
+    setSelectedProductDetails(product);
   }, []);
 
   const handleSetUpdatingImageProduct = useCallback((product: Product) => {
@@ -700,18 +701,18 @@ export default function ProductCatalog() {
   const handleUpdateImage = async (product: Product, url: string) => {
     try {
       toast.loading('Atualizando imagem...', { id: 'update-img' });
-      const success = await dataService.updateProductImage(product.id, url, product.type);
-      if (success) {
+      const result = await dataService.updateProductImage(product.id, url, product.type);
+      if (result.success) {
         toast.success('Imagem atualizada com sucesso! Recarregando catálogo...', { id: 'update-img' });
         setUpdatingImageProduct(null);
         // Refresh products
         const data = await dataService.getAllProducts();
         setProducts(data);
       } else {
-        toast.error('Erro ao atualizar imagem no Planilha.', { id: 'update-img' });
+        toast.error(`Erro ao atualizar imagem no Planilha: ${result.error || 'Verifique se a planilha está compartilhada com o e-mail da conta de serviço.'}`, { id: 'update-img', duration: 6000 });
       }
-    } catch (error) {
-       toast.error('Erro ao atualizar imagem.', { id: 'update-img' });
+    } catch (error: any) {
+       toast.error(`Erro ao atualizar imagem: ${error.message || error}`, { id: 'update-img' });
     }
   };
 
@@ -2620,6 +2621,230 @@ export default function ProductCatalog() {
             <img src={selectedImage} alt="Expanded View" className="max-w-full max-h-full object-contain rounded-2xl" />
           </motion.div>
         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {selectedProductDetails && (() => {
+          const product = selectedProductDetails;
+          const cartItem = cart.find(item => item.id === product.id);
+          const cartQty = cartItem ? cartItem.quantity : 0;
+          const hasStock = product.stock > 0;
+          const economy = product.salePrice - product.finalPrice;
+          const calculatedDiscount = product.salePrice > 0 ? (economy / product.salePrice) * 100 : 0;
+          const finalDiscount = applyCustomRounding(product.discount || calculatedDiscount);
+          
+          return (
+            <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 20 }} 
+                animate={{ opacity: 1, scale: 1, y: 0 }} 
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="bg-white dark:bg-[#1E1E1E] rounded-[32px] w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl relative border border-gray-100 dark:border-gray-800"
+              >
+                {/* Close Button */}
+                <button 
+                  onClick={() => setSelectedProductDetails(null)} 
+                  className="absolute top-6 right-6 p-2 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:text-gray-800 dark:hover:text-white transition-colors z-10 cursor-pointer"
+                >
+                  <X size={20} />
+                </button>
+
+                <div className="p-6 sm:p-8 grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
+                  {/* Left Column: Image & Quick actions */}
+                  <div className="flex flex-col gap-4">
+                    <div className="aspect-square w-full bg-white dark:bg-[#2A2A2A] rounded-2xl p-4 flex items-center justify-center relative overflow-hidden border border-gray-100 dark:border-gray-800 shadow-inner group">
+                      {/* Top Badges */}
+                      <div className="absolute top-3 left-3 flex flex-col gap-1 z-10">
+                        {product.type === 'offer' && <span className="bg-orange-600 text-white text-[8px] font-black px-2 py-1 rounded-full uppercase flex items-center gap-1 shadow-sm"><Flame size={10} /> Oferta</span>}
+                        {product.type === 'new' && <span className="bg-purple-600 text-white text-[8px] font-black px-2 py-1 rounded-full uppercase flex items-center gap-1 shadow-sm"><Sparkles size={10} /> Novo</span>}
+                      </div>
+
+                      <img 
+                        src={product.photo || `https://placehold.co/400x400/FFFFFF/CCCCCC?text=Sem+Foto`} 
+                        alt={product.description} 
+                        crossOrigin="anonymous"
+                        className="max-w-full max-h-full object-contain transition-all duration-300 group-hover:scale-105"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement;
+                          if (product.photo && !target.src.includes('weserv.nl')) {
+                            target.src = `https://images.weserv.nl/?url=${encodeURIComponent(product.photo)}&output=jpg&q=90&bg=white&fit=contain&w=500&h=500`;
+                          } else if (!target.src.includes('placehold.co')) {
+                            target.src = 'https://placehold.co/400x400/FFFFFF/DDDDDD?text=Foto+Indisponivel';
+                          }
+                        }}
+                      />
+
+                      {/* Zoom click */}
+                      <button 
+                        onClick={() => setSelectedImage(product.photo || `https://placehold.co/400x400/FFFFFF/CCCCCC?text=Sem+Foto`)}
+                        className="absolute bottom-3 right-3 p-2 bg-white/80 dark:bg-[#1E1E1E]/80 backdrop-blur-sm rounded-full text-gray-700 dark:text-gray-300 shadow hover:bg-white transition-colors cursor-pointer"
+                        title="Ver imagem ampliada"
+                      >
+                        <ExternalLink size={14} />
+                      </button>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => toggleFavorite(product)}
+                        className={cn(
+                          "flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-xs border transition-all cursor-pointer",
+                          isFavorite(product.id)
+                            ? "bg-red-50 dark:bg-red-950/10 text-red-600 border-red-200 dark:border-red-900/35"
+                            : "bg-gray-50 dark:bg-gray-800/40 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700/60 hover:bg-gray-100"
+                        )}
+                      >
+                        <Star size={14} fill={isFavorite(product.id) ? "currentColor" : "none"} />
+                        <span>{isFavorite(product.id) ? 'Favoritado' : 'Adicionar Favoritos'}</span>
+                      </button>
+
+                      {profile?.role === 'admin' && (
+                        <button 
+                          onClick={() => {
+                            setSelectedProductDetails(null);
+                            handleSetUpdatingImageProduct(product);
+                          }}
+                          className="flex items-center justify-center gap-2 p-3 bg-orange-50 dark:bg-orange-950/20 text-orange-600 dark:text-orange-400 border border-orange-100 dark:border-orange-900/30 rounded-xl hover:bg-orange-100 dark:hover:bg-orange-900/30 transition-colors cursor-pointer"
+                          title="Atualizar imagem do produto"
+                        >
+                          <Camera size={14} />
+                          <span className="text-xs font-bold">Atualizar Foto</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right Column: Product details & actions */}
+                  <div className="flex flex-col justify-between space-y-4">
+                    <div className="space-y-4">
+                      {/* Meta information */}
+                      <div className="flex flex-wrap gap-2 items-center">
+                        <span className="bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-[10px] font-bold px-2.5 py-1 rounded-md">
+                          ID: {product.id}
+                        </span>
+                        {product.ean && (
+                          <span className="bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 text-[10px] font-bold px-2.5 py-1 rounded-md flex items-center gap-1">
+                            EAN: {product.ean}
+                          </span>
+                        )}
+                        <span className={cn(
+                          "text-[10px] font-black px-2.5 py-1 rounded-md",
+                          hasStock 
+                            ? "bg-green-50 dark:bg-green-950/20 text-green-600 dark:text-green-400" 
+                            : "bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400"
+                        )}>
+                          {hasStock ? `${product.stock} Em Estoque` : 'Sem Estoque'}
+                        </span>
+                      </div>
+
+                      {/* Product Title / Description */}
+                      <div className="space-y-1">
+                        <h2 className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white leading-tight">
+                          {product.description}
+                        </h2>
+                        {product.manufacturer && (
+                          <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                            Marca: {product.manufacturer}
+                          </p>
+                        )}
+                        <p className="text-xs font-medium text-orange-600 dark:text-orange-400">
+                          Categoria: {product.category}
+                        </p>
+                      </div>
+
+                      {/* Prices panel */}
+                      <div className="bg-orange-50/50 dark:bg-orange-950/10 border border-orange-100/50 dark:border-orange-900/10 p-4 rounded-2xl space-y-2">
+                        {finalDiscount > 0 && profile?.role !== 'promotor' ? (
+                          <>
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-xs font-bold text-gray-400 line-through">
+                                De: {formatCurrency(product.salePrice)}
+                              </span>
+                              <span className="bg-red-500 text-white text-[9px] font-black px-2 py-0.5 rounded-full uppercase">
+                                {finalDiscount.toFixed(0)}% OFF
+                              </span>
+                            </div>
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-3xl font-black text-orange-600 dark:text-orange-400 tracking-tight">
+                                {formatCurrency(product.finalPrice)}
+                              </span>
+                              <span className="text-[10px] font-bold text-gray-500">
+                                Preço Final
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-green-600 dark:text-green-400 font-bold">
+                              Você economiza: {formatCurrency(economy)} por unidade
+                            </p>
+                          </>
+                        ) : (
+                          <div className="space-y-1">
+                            <span className="text-3xl font-black text-orange-600 dark:text-orange-400 tracking-tight">
+                              {formatCurrency(product.finalPrice)}
+                            </span>
+                            <p className="text-[10px] font-medium text-gray-500">
+                              Preço Unitário
+                            </p>
+                          </div>
+                        )}
+
+                        {product.discountExpiryDate && finalDiscount > 0 && (
+                          <div className="text-[10px] text-orange-600 dark:text-orange-400 font-bold flex items-center gap-1 border-t border-orange-100 dark:border-orange-900/30 pt-2 mt-1">
+                            <History size={12} />
+                            <span>Válido até: {new Date(product.discountExpiryDate + 'T12:00:00').toLocaleDateString('pt-BR')}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Quantity controls & Add to Order action */}
+                    <div className="pt-4 border-t border-gray-100 dark:border-gray-800">
+                      {cartQty > 0 ? (
+                        <div className="space-y-2">
+                          <p className="text-xs font-bold text-gray-500 dark:text-gray-400">
+                            Já adicionado ao seu pedido ({cartQty} un)
+                          </p>
+                          <div className="flex items-center gap-3">
+                            <button 
+                              onClick={() => updateQuantity(product.id, -1)}
+                              className="w-12 h-12 rounded-xl bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-800 dark:text-white font-bold flex items-center justify-center transition-colors cursor-pointer"
+                            >
+                              <Minus size={16} />
+                            </button>
+                            
+                            <div className="flex-1 text-center font-black text-lg text-gray-900 dark:text-white">
+                              {cartQty}
+                            </div>
+                            
+                            <button 
+                              onClick={() => updateQuantity(product.id, 1)}
+                              className="w-12 h-12 rounded-xl bg-orange-600 text-white hover:bg-orange-700 font-bold flex items-center justify-center transition-colors cursor-pointer"
+                            >
+                              <Plus size={16} />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button 
+                          disabled={!hasStock}
+                          onClick={() => addToCart(product)}
+                          className={cn(
+                            "w-full py-4 px-6 rounded-2xl font-black text-sm flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer",
+                            hasStock 
+                              ? "bg-orange-600 hover:bg-orange-700 text-white shadow-orange-500/20 hover:shadow-orange-500/30"
+                              : "bg-gray-200 dark:bg-gray-800 text-gray-400 cursor-not-allowed shadow-none"
+                          )}
+                        >
+                          <ShoppingCart size={16} />
+                          <span>{hasStock ? 'Adicionar ao Pedido' : 'Sem Estoque'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
+          );
+        })()}
       </AnimatePresence>
 
       <AnimatePresence>
