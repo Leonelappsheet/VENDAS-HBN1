@@ -610,15 +610,22 @@ export const dataService = {
     const appsScriptUrl = getAppsScriptUrl();
     if (appsScriptUrl) {
       try {
-        const response = await axios.post(appsScriptUrl, {
-          action: 'update-client',
-          spreadsheetId: getSpreadsheetId(currentRegional),
-          client
+        const response = await fetch(appsScriptUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain'
+          },
+          body: JSON.stringify({
+            action: 'update-client',
+            spreadsheetId: getSpreadsheetId(currentRegional),
+            client
+          })
         });
-        if (response.data?.sucesso || response.data?.success) {
+        const resData = await response.json();
+        if (resData?.sucesso || resData?.success) {
           return { sucesso: true };
         }
-        throw new Error(response.data?.error || 'Erro no script do Google');
+        throw new Error(resData?.error || 'Erro no script do Google');
       } catch (error: any) {
         console.error('Error updating client via Apps Script:', error);
         toast.error(`Erro ao atualizar cliente: ${error.message}`);
@@ -651,19 +658,26 @@ export const dataService = {
     if (appsScriptUrl) {
       try {
         toast.loading('Processando catálogo no Google Sheets via Apps Script...', { id: 'update-catalog-progress' });
-        const response = await axios.post(appsScriptUrl, {
-          action: 'update-catalog',
-          spreadsheetId: getSpreadsheetId(currentRegional),
-          industria,
-          dados,
-          defaultExpiryDate
+        const response = await fetch(appsScriptUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain'
+          },
+          body: JSON.stringify({
+            action: 'update-catalog',
+            spreadsheetId: getSpreadsheetId(currentRegional),
+            industria,
+            dados,
+            defaultExpiryDate
+          })
         });
         toast.dismiss('update-catalog-progress');
-        if (response.data?.sucesso || response.data?.success) {
+        const resData = await response.json();
+        if (resData?.sucesso || resData?.success) {
           toast.success('Catálogo atualizado com sucesso via Apps Script!');
           return { sucesso: true };
         }
-        throw new Error(response.data?.error || 'Erro no script do Google');
+        throw new Error(resData?.error || 'Erro no script do Google');
       } catch (error: any) {
         toast.dismiss('update-catalog-progress');
         console.error('Error updating catalog via Apps Script:', error);
@@ -701,10 +715,25 @@ export const dataService = {
       
       // 2. Try to save to Google Sheets (external sync)
       try {
-        await axios.post(`${getApiUrl()}/api/order`, orderWithId, {
-          headers: this.getHeaders(),
-          timeout: 5000 // Fast fail for offline
-        });
+        const appsScriptUrl = getAppsScriptUrl();
+        if (appsScriptUrl) {
+          await fetch(appsScriptUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'text/plain'
+            },
+            body: JSON.stringify({
+              action: 'save-order',
+              spreadsheetId: getSpreadsheetId(currentRegional),
+              order: orderWithId
+            })
+          });
+        } else {
+          await axios.post(`${getApiUrl()}/api/order`, orderWithId, {
+            headers: this.getHeaders(),
+            timeout: 5000 // Fast fail for offline
+          });
+        }
       } catch (sheetsError) {
         console.warn('Google Sheets sync failed (offline?), will sync later when online if the server supports it or via another mechanism.');
       }
@@ -1077,17 +1106,24 @@ export const dataService = {
     const appsScriptUrl = getAppsScriptUrl();
     if (appsScriptUrl) {
       try {
-        const response = await axios.post(appsScriptUrl, {
-          action: 'update-image',
-          spreadsheetId: getSpreadsheetId(currentRegional),
-          id: productId,
-          imageUrl,
-          sheetName
+        const response = await fetch(appsScriptUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain'
+          },
+          body: JSON.stringify({
+            action: 'update-image',
+            spreadsheetId: getSpreadsheetId(currentRegional),
+            id: productId,
+            imageUrl,
+            sheetName
+          })
         });
-        if (response.data?.sucesso || response.data?.success) {
+        const resData = await response.json();
+        if (resData?.sucesso || resData?.success) {
           return { success: true };
         }
-        throw new Error(response.data?.error || 'Erro no script do Google');
+        throw new Error(resData?.error || 'Erro no script do Google');
       } catch (error: any) {
         console.error('Error updating image via Apps Script:', error);
         return { success: false, error: error.message };
