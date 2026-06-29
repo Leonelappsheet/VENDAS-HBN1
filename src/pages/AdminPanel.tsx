@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { dataService } from '../services/dataService';
+import { dataService, getApiUrl } from '../services/dataService';
 import { Order, Client } from '../types';
 import { 
   ChevronLeft, 
@@ -928,14 +928,19 @@ export default function AdminPanel() {
 
                   {/* Personalizar URL do Servidor Backend */}
                   <div className="bg-orange-50/50 dark:bg-orange-950/10 p-5 rounded-2xl border border-orange-100/50 dark:border-orange-900/30 mb-6 font-sans">
-                    <p className="text-[10px] font-black text-orange-600 dark:text-orange-400 uppercase mb-1">⚙️ URL da API do Servidor Backend (Evita Erro 405)</p>
-                    <p className="text-[11px] text-gray-600 dark:text-gray-400 mb-3 leading-relaxed">
-                      Se o seu site está hospedado no <strong>Cloudflare Workers / Pages</strong> (como o seu link <code>leonelamorimm.workers.dev</code>), ele funciona de forma estática. Para que operações como salvar fotos de produtos, atualizar dados de clientes ou alterar catálogos funcionem sem dar <strong>Erro 405 (Method Not Allowed)</strong>, é necessário hospedar o backend no <strong>Netlify</strong> (conforme o guia <code>DEPLOY_NETLIFY.md</code>) e colar o link da sua API do Netlify aqui.
+                    <p className="text-[10px] font-black text-orange-600 dark:text-orange-400 uppercase mb-1">⚙️ Servidor Backend & Integração de Fotos (Evita Erro 405)</p>
+                    <p className="text-[11px] text-gray-600 dark:text-gray-400 mb-2 leading-relaxed">
+                      Se o seu site está hospedado de forma estática (como o link <code>workers.dev</code>), ele não possui servidor para processar gravação direta de imagens na planilha. 
+                      Para resolver isso de forma 100% transparente, o sistema agora <strong>faz um redirecionamento inteligente automático</strong> para o servidor ativo na Cloud Run da AI Studio, garantindo que o envio de imagens funcione perfeitamente!
                     </p>
+                    <div className="text-[10px] bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-2.5 rounded-xl mb-3 flex flex-col gap-1">
+                      <span className="font-bold text-gray-500">API Ativa no Momento:</span>
+                      <code className="text-orange-600 dark:text-orange-400 select-all break-all">{getApiUrl() || '(Mesma Origem / Localhost)'}</code>
+                    </div>
                     <div className="flex flex-col sm:flex-row gap-2">
                       <input
                         type="text"
-                        placeholder="Ex: https://vendas-hbn1.netlify.app"
+                        placeholder="Ex: https://vendas-hbn1.netlify.app (Se desejar usar Netlify próprio)"
                         value={customApiUrl}
                         onChange={(e) => setCustomApiUrl(e.target.value)}
                         className="flex-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-orange-500 dark:text-white"
@@ -943,14 +948,14 @@ export default function AdminPanel() {
                       <div className="flex gap-2">
                         <button
                           onClick={handleSaveCustomApiUrl}
-                          className="bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors whitespace-nowrap"
+                          className="bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors whitespace-nowrap cursor-pointer"
                         >
                           Salvar URL
                         </button>
                         {localStorage.getItem('CUSTOM_API_URL') && (
                           <button
                             onClick={handleResetCustomApiUrl}
-                            className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors"
+                            className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors cursor-pointer"
                           >
                             Resetar
                           </button>
