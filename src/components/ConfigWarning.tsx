@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, ExternalLink, Copy, Check, Save, RotateCcw } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Copy, Check, Save, RotateCcw, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { dataService, getAppsScriptUrl } from '../services/dataService';
@@ -12,6 +12,7 @@ interface StatusData {
   spreadsheetInfo: any;
   spreadsheetError: string;
   instructions: string[];
+  isFallback?: boolean;
 }
 
 export function ConfigWarning() {
@@ -19,16 +20,9 @@ export function ConfigWarning() {
   const [copied, setCopied] = useState(false);
   const [customId, setCustomId] = useState('');
   const [currentReg, setCurrentReg] = useState('TIMON-MA');
+  const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    if (getAppsScriptUrl()) {
-      return; // Skip loading if Google Apps Script is configured
-    }
-
-    dataService.getStatus()
-      .then(data => setStatus(data))
-      .catch(err => console.error('Error fetching status:', err));
-
     try {
       const savedProfile = localStorage.getItem('VENDAS_profile');
       let regional = 'TIMON-MA';
@@ -39,11 +33,25 @@ export function ConfigWarning() {
           setCurrentReg(parsed.regional);
         }
       }
+
+      const isDismissed = localStorage.getItem(`HIDE_CONFIG_WARNING_${regional}`);
+      if (isDismissed === 'true') {
+        setDismissed(true);
+      }
+
       const savedId = localStorage.getItem(`CUSTOM_SPREADSHEET_ID_${regional}`);
       if (savedId) {
         setCustomId(savedId);
       }
     } catch (e) {}
+
+    if (getAppsScriptUrl()) {
+      return; // Skip loading if Google Apps Script is configured
+    }
+
+    dataService.getStatus()
+      .then(data => setStatus(data))
+      .catch(err => console.error('Error fetching status:', err));
   }, []);
 
   const copyEmail = () => {
@@ -94,16 +102,39 @@ export function ConfigWarning() {
     }
   };
 
+  const handleDismiss = () => {
+    try {
+      localStorage.setItem(`HIDE_CONFIG_WARNING_${currentReg}`, 'true');
+      setDismissed(true);
+      toast.info('Mensagem de erro oculta. Se precisar ajustar a planilha, você pode resetar o ID nas configurações ou recarregar.');
+    } catch (e) {}
+  };
+
   if (getAppsScriptUrl()) return null;
+  if (dismissed) return null;
   if (!status || status.ok) return null;
+
+  // Se estivermos em modo fallback (sheets carregadas diretamente) e NÃO houver uma mensagem específica de erro da planilha,
+  // ocultamos o aviso assustador porque o app está funcionando 100% via carregamento direto do Google Sheets.
+  if (status.isFallback && !status.spreadsheetError) {
+    return null;
+  }
 
   return (
     <motion.div 
       initial={{ opacity: 0, y: -20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="mb-6 bg-red-50 dark:bg-red-900/20 border-2 border-red-200 dark:border-red-800 rounded-2xl p-6 shadow-xl"
+      className="relative mb-6 bg-red-50 dark:bg-red-900/20 border-2 border-red-200 dark:border-red-800 rounded-2xl p-6 shadow-xl"
     >
-      <div className="flex items-start gap-4">
+      <button 
+        onClick={handleDismiss}
+        className="absolute top-4 right-4 text-red-400 hover:text-red-700 dark:text-red-500 dark:hover:text-red-300 p-1.5 hover:bg-red-100 dark:hover:bg-red-900/40 rounded-full transition-colors"
+        title="Ocultar aviso"
+      >
+        <X size={20} />
+      </button>
+
+      <div className="flex items-start gap-4 pr-6">
         <div className="w-12 h-12 bg-red-100 dark:bg-red-900/40 rounded-full flex items-center justify-center text-red-600 shrink-0">
           <AlertTriangle size={28} />
         </div>
