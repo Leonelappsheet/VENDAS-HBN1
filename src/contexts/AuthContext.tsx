@@ -3,7 +3,6 @@ import { UserProfile } from '../types';
 import { dataService } from '../services/dataService';
 import { auth } from '../lib/firebase';
 import { signInAnonymously } from 'firebase/auth';
-import { safeLocalStorage } from '../lib/storage';
 
 interface AuthContextType {
   profile: UserProfile | null;
@@ -23,7 +22,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         let savedProfile = null;
         try {
-          savedProfile = safeLocalStorage.getItem('VENDAS_profile');
+          savedProfile = localStorage.getItem('VENDAS_profile');
         } catch (storageError) {
           console.warn('LocalStorage access failed:', storageError);
         }
@@ -49,11 +48,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             
             // Auto-refresh profile in background
             dataService.getUsersFromSheets().then(users => {
-              const foundUser = users.find(u => {
-                const userUsername = String(u.username || '').toLowerCase().trim();
-                const parsedUid = String(parsed.uid || '').toLowerCase().trim();
-                return userUsername && parsedUid && userUsername === parsedUid;
-              });
+              const foundUser = users.find(u => u.username.toLowerCase() === parsed.uid.toLowerCase());
               if (foundUser) {
                 const updatedProfile = { 
                   ...parsed, 
@@ -63,14 +58,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 };
                 setProfile(updatedProfile);
                 try {
-                  safeLocalStorage.setItem('VENDAS_profile', JSON.stringify(updatedProfile));
+                  localStorage.setItem('VENDAS_profile', JSON.stringify(updatedProfile));
                 } catch (e) {}
               }
             }).catch(() => {});
           } catch (e) {
             console.error('Profile parse error:', e);
             try {
-              safeLocalStorage.removeItem('VENDAS_profile');
+              localStorage.removeItem('VENDAS_profile');
             } catch (remError) {}
           }
         }
@@ -88,13 +83,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const users = await dataService.getUsersFromSheets();
       
-      const foundUser = users.find(u => {
-        const uName = String(u.username || '').toLowerCase().trim();
-        const inputName = String(username || '').toLowerCase().trim();
-        const uPass = String(u.password !== undefined && u.password !== null ? u.password : '').trim();
-        const inputPass = String(password || '').trim();
-        return uName && inputName && uName === inputName && uPass === inputPass;
-      });
+      const foundUser = users.find(u => 
+        u.username.toLowerCase() === username.toLowerCase() && 
+        u.password === (password || '')
+      );
 
       if (foundUser) {
         // Sign in to Firebase Auth
@@ -115,7 +107,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           regional: foundUser.regional || 'TIMON-MA'
         };
         setProfile(newProfile);
-        safeLocalStorage.setItem('VENDAS_profile', JSON.stringify(newProfile));
+        localStorage.setItem('VENDAS_profile', JSON.stringify(newProfile));
         return true;
       }
       return false;
@@ -127,7 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     setProfile(null);
-    safeLocalStorage.removeItem('VENDAS_profile');
+    localStorage.removeItem('VENDAS_profile');
     await auth.signOut();
   };
 

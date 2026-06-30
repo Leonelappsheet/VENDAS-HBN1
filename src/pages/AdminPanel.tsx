@@ -26,13 +26,12 @@ import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import { REGIONALS, getRegionalLabel } from '../constants/regionals';
 import { ClientSchema } from '../lib/schemas';
-import { safeLocalStorage } from '../lib/storage';
 
 export default function AdminPanel() {
   const { profile } = useAuth();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
-  const [darkMode, setDarkMode] = useState(() => safeLocalStorage.getItem('VENDAS_dark') === '1');
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('VENDAS_dark') === '1');
   const [activeTab, setActiveTab] = useState<'relatorio' | 'inativos' | 'produtos' | 'ranking' | 'metas' | 'regional' | 'sincronizacao' | 'carrinhos'>('relatorio');
   const [orders, setOrders] = useState<Order[]>([]);
   const [sheetOrders, setSheetOrders] = useState<Order[]>([]);
@@ -44,14 +43,14 @@ export default function AdminPanel() {
   const [adminCustomId, setAdminCustomId] = useState('');
   const [customApiUrl, setCustomApiUrl] = useState(() => {
     try {
-      return safeLocalStorage.getItem('CUSTOM_API_URL') || '';
+      return localStorage.getItem('CUSTOM_API_URL') || '';
     } catch (e) {
       return '';
     }
   });
   const [customAppsScriptUrl, setCustomAppsScriptUrl] = useState(() => {
     try {
-      return safeLocalStorage.getItem('CUSTOM_APPS_SCRIPT_URL') || '';
+      return localStorage.getItem('CUSTOM_APPS_SCRIPT_URL') || '';
     } catch (e) {
       return '';
     }
@@ -84,7 +83,7 @@ export default function AdminPanel() {
       } catch (e) {}
 
       try {
-        const savedId = safeLocalStorage.getItem(`CUSTOM_SPREADSHEET_ID_${profile.regional || 'TIMON-MA'}`);
+        const savedId = localStorage.getItem(`CUSTOM_SPREADSHEET_ID_${profile.regional || 'TIMON-MA'}`);
         if (savedId) {
           setAdminCustomId(savedId);
         }
@@ -165,10 +164,10 @@ export default function AdminPanel() {
 
     try {
       if (cleaned) {
-        safeLocalStorage.setItem(`CUSTOM_SPREADSHEET_ID_${profile.regional || 'TIMON-MA'}`, cleaned);
+        localStorage.setItem(`CUSTOM_SPREADSHEET_ID_${profile.regional || 'TIMON-MA'}`, cleaned);
         toast.success('ID da Planilha personalizado salvo com sucesso!');
       } else {
-        safeLocalStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${profile.regional || 'TIMON-MA'}`);
+        localStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${profile.regional || 'TIMON-MA'}`);
         toast.success('Restaurado para a planilha padrão!');
       }
       setTimeout(() => {
@@ -183,7 +182,7 @@ export default function AdminPanel() {
   const handleResetAdminCustomId = () => {
     if (!profile) return;
     try {
-      safeLocalStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${profile.regional || 'TIMON-MA'}`);
+      localStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${profile.regional || 'TIMON-MA'}`);
       setAdminCustomId('');
       toast.success('Restaurado para a planilha padrão!');
       setTimeout(() => {
@@ -198,10 +197,10 @@ export default function AdminPanel() {
     let cleaned = customApiUrl.trim().replace(/\/$/, '');
     try {
       if (cleaned) {
-        safeLocalStorage.setItem('CUSTOM_API_URL', cleaned);
+        localStorage.setItem('CUSTOM_API_URL', cleaned);
         toast.success('URL da API personalizada salva com sucesso!');
       } else {
-        safeLocalStorage.removeItem('CUSTOM_API_URL');
+        localStorage.removeItem('CUSTOM_API_URL');
         toast.success('Restaurado para a API padrão!');
       }
       setTimeout(() => {
@@ -215,7 +214,7 @@ export default function AdminPanel() {
 
   const handleResetCustomApiUrl = () => {
     try {
-      safeLocalStorage.removeItem('CUSTOM_API_URL');
+      localStorage.removeItem('CUSTOM_API_URL');
       setCustomApiUrl('');
       toast.success('Restaurado para a API padrão!');
       setTimeout(() => {
@@ -230,10 +229,10 @@ export default function AdminPanel() {
     let cleaned = customAppsScriptUrl.trim();
     try {
       if (cleaned) {
-        safeLocalStorage.setItem('CUSTOM_APPS_SCRIPT_URL', cleaned);
+        localStorage.setItem('CUSTOM_APPS_SCRIPT_URL', cleaned);
         toast.success('URL do Google Apps Script salva com sucesso!');
       } else {
-        safeLocalStorage.removeItem('CUSTOM_APPS_SCRIPT_URL');
+        localStorage.removeItem('CUSTOM_APPS_SCRIPT_URL');
         toast.success('Script do Google Apps Script desativado!');
       }
       setTimeout(() => {
@@ -247,7 +246,7 @@ export default function AdminPanel() {
 
   const handleResetCustomAppsScriptUrl = () => {
     try {
-      safeLocalStorage.removeItem('CUSTOM_APPS_SCRIPT_URL');
+      localStorage.removeItem('CUSTOM_APPS_SCRIPT_URL');
       setCustomAppsScriptUrl('');
       toast.success('Script do Google Apps Script desativado!');
       setTimeout(() => {
@@ -573,11 +572,7 @@ export default function AdminPanel() {
                 </div>
                 <div className="divide-y divide-gray-50 dark:divide-gray-800">
                   {allMetas.map((m, index) => {
-                    const sellerTotal = orders.filter(o => {
-                      const orderSeller = String(o.seller || '').toLowerCase().trim();
-                      const metaSeller = String(m.vendedor || '').toLowerCase().trim();
-                      return orderSeller && metaSeller && orderSeller === metaSeller;
-                    }).reduce((sum, o) => sum + o.total, 0);
+                    const sellerTotal = orders.filter(o => o.seller.toLowerCase() === m.vendedor.toLowerCase()).reduce((sum, o) => sum + o.total, 0);
                     const prog = Math.min(100, (sellerTotal / m.valor) * 100);
                     return (
                       <div key={index} className="p-4 space-y-2">
@@ -957,7 +952,7 @@ export default function AdminPanel() {
                         >
                           Salvar
                         </button>
-                        {safeLocalStorage.getItem(`CUSTOM_SPREADSHEET_ID_${profile?.regional || 'TIMON-MA'}`) && (
+                        {localStorage.getItem(`CUSTOM_SPREADSHEET_ID_${profile?.regional || 'TIMON-MA'}`) && (
                           <button
                             onClick={handleResetAdminCustomId}
                             className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors"
@@ -1018,7 +1013,7 @@ export default function AdminPanel() {
                           >
                             Salvar Script
                           </button>
-                          {safeLocalStorage.getItem('CUSTOM_APPS_SCRIPT_URL') && (
+                          {localStorage.getItem('CUSTOM_APPS_SCRIPT_URL') && (
                             <button
                               onClick={handleResetCustomAppsScriptUrl}
                               className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors cursor-pointer"
@@ -1058,12 +1053,20 @@ export default function AdminPanel() {
                           <div className="relative mt-2">
                             <p className="font-bold text-gray-700 dark:text-gray-300 mb-1">Código para colar no Apps Script:</p>
                             <pre className="p-3 bg-gray-50 dark:bg-gray-950 rounded-xl overflow-x-auto text-[9px] text-gray-700 dark:text-gray-300 font-mono select-all max-h-[250px]">
-{`function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({sucesso: true, ok: true, msg: "Apps Script pronto e ativo!"}))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-function doPost(e) {
+{`function doPost(e) {
+  var corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400"
+  };
+  
+  if (e.httpMethod === "OPTIONS") {
+    return ContentService.createTextOutput("")
+      .setMimeType(ContentService.MimeType.TEXT)
+      .setHeaders(corsHeaders);
+  }
+  
   try {
     var data = JSON.parse(e.postData.contents);
     var sheetId = data.spreadsheetId;
@@ -1071,7 +1074,8 @@ function doPost(e) {
     
     if (!sheetId) {
       return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Faltando ID da planilha"}))
-        .setMimeType(ContentService.MimeType.JSON);
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
     }
     
     var ss = SpreadsheetApp.openById(sheetId);
@@ -1083,7 +1087,8 @@ function doPost(e) {
       var targetSheet = ss.getSheetByName(sheetName);
       if (!targetSheet) {
         return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Aba '" + sheetName + "' não encontrada"}))
-          .setMimeType(ContentService.MimeType.JSON);
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
       }
       
       var values = targetSheet.getDataRange().getValues();
@@ -1103,7 +1108,8 @@ function doPost(e) {
       
       if (idColIdx === -1) {
         return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Coluna ID não encontrada"}))
-          .setMimeType(ContentService.MimeType.JSON);
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
       }
       
       if (photoColIdx === -1) {
@@ -1115,12 +1121,14 @@ function doPost(e) {
         if (normalize(values[row][idColIdx]) === normalize(id)) {
           targetSheet.getRange(row + 1, photoColIdx + 1).setValue(imageUrl);
           return ContentService.createTextOutput(JSON.stringify({sucesso: true}))
-            .setMimeType(ContentService.MimeType.JSON);
+            .setMimeType(ContentService.MimeType.JSON)
+            .setHeaders(corsHeaders);
         }
       }
       
       return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "ID não encontrado"}))
-        .setMimeType(ContentService.MimeType.JSON);
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
     }
     
     if (action === "update-client") {
@@ -1128,7 +1136,8 @@ function doPost(e) {
       var targetSheet = ss.getSheetByName("Clientes");
       if (!targetSheet) {
         return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Aba Clientes não encontrada"}))
-          .setMimeType(ContentService.MimeType.JSON);
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
       }
       
       var values = targetSheet.getDataRange().getValues();
@@ -1146,7 +1155,8 @@ function doPost(e) {
       
       if (cnpjColIdx === -1) {
         return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Coluna CNPJ não encontrada"}))
-          .setMimeType(ContentService.MimeType.JSON);
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
       }
       
       var cleanCnpj = normalize(client.cnpj);
@@ -1164,12 +1174,14 @@ function doPost(e) {
             else if (h === "vendedor") targetSheet.getRange(row + 1, col + 1).setValue(client.seller);
           }
           return ContentService.createTextOutput(JSON.stringify({sucesso: true}))
-            .setMimeType(ContentService.MimeType.JSON);
+            .setMimeType(ContentService.MimeType.JSON)
+            .setHeaders(corsHeaders);
         }
       }
       
       return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Cliente não encontrado"}))
-        .setMimeType(ContentService.MimeType.JSON);
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
     }
     
     if (action === "save-order") {
@@ -1200,7 +1212,8 @@ function doPost(e) {
       ]);
       
       return ContentService.createTextOutput(JSON.stringify({sucesso: true}))
-        .setMimeType(ContentService.MimeType.JSON);
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
     }
     
     if (action === "update-catalog") {
@@ -1219,7 +1232,8 @@ function doPost(e) {
       var mapping = INDUSTRY_MAPPINGS[industria.toUpperCase()];
       if (!mapping) {
         return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Mapeamento da indústria " + industria + " não encontrado"}))
-          .setMimeType(ContentService.MimeType.JSON);
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
       }
       
       for (var s = 0; s < sheetsToSync.length; s++) {
@@ -1255,15 +1269,18 @@ function doPost(e) {
       }
       
       return ContentService.createTextOutput(JSON.stringify({sucesso: true}))
-        .setMimeType(ContentService.MimeType.JSON);
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
     }
     
     return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Ação não reconhecida"}))
-      .setMimeType(ContentService.MimeType.JSON);
+      .setMimeType(ContentService.MimeType.JSON)
+      .setHeaders(corsHeaders);
       
   } catch(err) {
     return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: err.toString()}))
-      .setMimeType(ContentService.MimeType.JSON);
+      .setMimeType(ContentService.MimeType.JSON)
+      .setHeaders(corsHeaders);
   }
 }`}
                             </pre>
@@ -1304,7 +1321,7 @@ function doPost(e) {
                           >
                             Salvar API
                           </button>
-                          {safeLocalStorage.getItem('CUSTOM_API_URL') && (
+                          {localStorage.getItem('CUSTOM_API_URL') && (
                             <button
                               onClick={handleResetCustomApiUrl}
                               className="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 font-bold text-xs px-3 py-2 rounded-xl transition-colors cursor-pointer"

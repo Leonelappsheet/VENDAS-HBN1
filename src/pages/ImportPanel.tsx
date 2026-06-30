@@ -28,7 +28,6 @@ import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { REGIONALS, getRegionalLabel, RegionalKey } from '../constants/regionals';
-import { safeLocalStorage, safeSessionStorage } from '../lib/storage';
 
 export default function ImportPanel() {
   const { profile } = useAuth();
@@ -96,7 +95,7 @@ export default function ImportPanel() {
     try {
       setIsProcessing(true);
       const cartKey = `cart_${client.id}`;
-      const saved = safeLocalStorage.getItem(cartKey);
+      const saved = localStorage.getItem(cartKey);
       let cartItems: any[] = saved ? JSON.parse(saved) : [];
 
       selectedItems.forEach((item: any) => {
@@ -108,7 +107,7 @@ export default function ImportPanel() {
         }
       });
 
-      safeLocalStorage.setItem(cartKey, JSON.stringify(cartItems));
+      localStorage.setItem(cartKey, JSON.stringify(cartItems));
       await dataService.saveCart(client.id, cartItems);
       toast.success(`${selectedItems.length} itens adicionados ao carrinho de ${client.name}`);
       
@@ -125,7 +124,7 @@ export default function ImportPanel() {
   };
 
   const selectedClient = useMemo(() => {
-    const saved = safeSessionStorage.getItem('selectedClient');
+    const saved = sessionStorage.getItem('selectedClient');
     return saved ? JSON.parse(saved) : null;
   }, []);
 
@@ -388,15 +387,11 @@ export default function ImportPanel() {
                 };
 
                 // Find client in system
-                const matchedClient = allClients.find(c => {
-                  const clientCnpj = String(c.cnpj || '').replace(/[^\d]/g, '');
-                  const clientName = String(c.name || '').toLowerCase();
-                  const searchName = String(name || '').toLowerCase();
-                  return (
-                    (cnpj && clientCnpj === cnpj) ||
-                    (clientName && searchName && (clientName.includes(searchName) || searchName.includes(clientName)))
-                  );
-                });
+                const matchedClient = allClients.find(c => 
+                  (cnpj && c.cnpj.replace(/[^\d]/g, '') === cnpj) ||
+                  c.name.toLowerCase().includes(name.toLowerCase()) ||
+                  name.toLowerCase().includes(c.name.toLowerCase())
+                );
                 if (matchedClient) clientObj.client = matchedClient;
 
                 // Find products that belong to this client block
@@ -523,7 +518,7 @@ export default function ImportPanel() {
 
         if (selectedItems.length > 0) {
           const cartKey = `cart_${client.id}`;
-          const saved = safeLocalStorage.getItem(cartKey);
+          const saved = localStorage.getItem(cartKey);
           let cartItems: any[] = saved ? JSON.parse(saved) : [];
 
           selectedItems.forEach((item: any) => {
@@ -535,7 +530,7 @@ export default function ImportPanel() {
             }
           });
 
-          safeLocalStorage.setItem(cartKey, JSON.stringify(cartItems));
+          localStorage.setItem(cartKey, JSON.stringify(cartItems));
           await dataService.saveCart(client.id, cartItems);
           totalAdded += selectedItems.length;
           clientsWithOrders++;
@@ -551,7 +546,7 @@ export default function ImportPanel() {
           const firstClientName = processedClients[0];
           const firstClient = results.find(r => r.client?.name === firstClientName)?.client;
           if (firstClient) {
-            safeSessionStorage.setItem('selectedClient', JSON.stringify(firstClient));
+            sessionStorage.setItem('selectedClient', JSON.stringify(firstClient));
           }
         }
         

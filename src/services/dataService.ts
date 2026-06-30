@@ -20,11 +20,10 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { getSpreadsheetId } from '../constants/regionals';
 import { normalizeEAN } from '../lib/utils';
-import { safeLocalStorage } from '../lib/storage';
 
 export const getApiUrl = (): string => {
   try {
-    const custom = safeLocalStorage.getItem('CUSTOM_API_URL');
+    const custom = localStorage.getItem('CUSTOM_API_URL');
     if (custom && custom.trim()) {
       return custom.trim().replace(/\/$/, '');
     }
@@ -54,7 +53,7 @@ export const getApiUrl = (): string => {
 
 export const getAppsScriptUrl = (): string => {
   try {
-    const custom = safeLocalStorage.getItem('CUSTOM_APPS_SCRIPT_URL');
+    const custom = localStorage.getItem('CUSTOM_APPS_SCRIPT_URL');
     if (custom && custom.trim()) {
       return custom.trim();
     }
@@ -293,7 +292,7 @@ export const dataService = {
   // Offline Caching Helpers
   getCache<T>(key: string): T | null {
     try {
-      const cached = safeLocalStorage.getItem(`VENDAS_cache_${key}`);
+      const cached = localStorage.getItem(`VENDAS_cache_${key}`);
       if (cached) {
         const { data, timestamp } = JSON.parse(cached);
         // Optional: Implement cache expiration if needed
@@ -307,7 +306,7 @@ export const dataService = {
 
   setCache<T>(key: string, data: T) {
     try {
-      safeLocalStorage.setItem(`VENDAS_cache_${key}`, JSON.stringify({
+      localStorage.setItem(`VENDAS_cache_${key}`, JSON.stringify({
         data,
         timestamp: Date.now()
       }));
@@ -315,7 +314,7 @@ export const dataService = {
       // LocalStorage might be full
       console.warn('Cache storage error (likely full):', e);
       if (e instanceof Error && e.name === 'QuotaExceededError') {
-        safeLocalStorage.removeItem(`VENDAS_cache_${key}`);
+        localStorage.removeItem(`VENDAS_cache_${key}`);
       }
     }
   },
@@ -589,22 +588,14 @@ export const dataService = {
       this.setCache(cacheKey, clients);
 
       if (!isAdmin && sellerName) {
-        const query = String(sellerName).toLowerCase().trim();
-        clients = clients.filter((c: Client) => {
-          const clientSeller = String(c.seller || '').toLowerCase().trim();
-          return clientSeller && clientSeller.includes(query);
-        });
+        clients = clients.filter((c: Client) => c.seller.toLowerCase().includes(sellerName.toLowerCase()));
       }
       return clients;
     } catch (error: any) {
       if (cachedClients) {
         let clients = cachedClients;
         if (!isAdmin && sellerName) {
-          const query = String(sellerName).toLowerCase().trim();
-          clients = clients.filter((c: Client) => {
-            const clientSeller = String(c.seller || '').toLowerCase().trim();
-            return clientSeller && clientSeller.includes(query);
-          });
+          clients = clients.filter((c: Client) => c.seller.toLowerCase().includes(sellerName.toLowerCase()));
         }
         return clients;
       }

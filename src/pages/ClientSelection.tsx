@@ -9,7 +9,6 @@ import { cn } from '../lib/utils';
 import { toast } from 'sonner';
 import { Visit } from '../types';
 import { getRegionalLabel } from '../constants/regionals';
-import { safeLocalStorage, safeSessionStorage } from '../lib/storage';
 
 import { ConfigWarning } from '../components/ConfigWarning';
 
@@ -21,7 +20,7 @@ export default function ClientSelection() {
   const [firestoreCarts, setFirestoreCarts] = useState<any[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
-  const [darkMode, setDarkMode] = useState(() => safeLocalStorage.getItem('VENDAS_dark') === '1');
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('VENDAS_dark') === '1');
   const [showProfile, setShowProfile] = useState(false);
   const [showVisitModal, setShowVisitModal] = useState<Client | null>(null);
   const [showMapModal, setShowMapModal] = useState<Client | null>(null);
@@ -73,31 +72,26 @@ export default function ClientSelection() {
   useEffect(() => {
     if (darkMode) {
       document.documentElement.classList.add('dark');
-      safeLocalStorage.setItem('VENDAS_dark', '1');
+      localStorage.setItem('VENDAS_dark', '1');
     } else {
       document.documentElement.classList.remove('dark');
-      safeLocalStorage.setItem('VENDAS_dark', '0');
+      localStorage.setItem('VENDAS_dark', '0');
     }
   }, [darkMode]);
 
   const filteredClients = clients.filter(c => {
     const query = search.toLowerCase();
-    const nameStr = String(c.name || '').toLowerCase();
-    const tradeNameStr = String(c.tradeName || '').toLowerCase();
-    const cnpjStr = String(c.cnpj || '');
-    const cityStr = String(c.city || '').toLowerCase();
-    const sellerStr = String(c.seller || '').toLowerCase();
     return (
-      nameStr.includes(query) ||
-      tradeNameStr.includes(query) ||
-      cnpjStr.includes(query) ||
-      cityStr.includes(query) ||
-      sellerStr.includes(query)
+      c.name.toLowerCase().includes(query) ||
+      c.tradeName.toLowerCase().includes(query) ||
+      c.cnpj.includes(query) ||
+      c.city.toLowerCase().includes(query) ||
+      c.seller.toLowerCase().includes(query)
     );
   });
 
   const handleSelectClient = (client: Client) => {
-    safeSessionStorage.setItem('selectedClient', JSON.stringify(client));
+    sessionStorage.setItem('selectedClient', JSON.stringify(client));
     navigate('/catalog');
   };
 
@@ -220,8 +214,8 @@ export default function ClientSelection() {
                   const cartForClientSheet = sheetCarts.find(cart => 
                     (cart.id && String(cart.id).trim() === String(client.id).trim()) || 
                     (cart.clientName && (
-                      String(cart.clientName).toLowerCase().trim() === String(client.name || '').toLowerCase().trim() ||
-                      String(cart.clientName).toLowerCase().trim() === String(client.tradeName || '').toLowerCase().trim()
+                      cart.clientName.toLowerCase().trim() === client.name.toLowerCase().trim() ||
+                      cart.clientName.toLowerCase().trim() === client.tradeName?.toLowerCase().trim()
                     ))
                   );
 

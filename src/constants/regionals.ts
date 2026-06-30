@@ -1,5 +1,3 @@
-import { safeLocalStorage } from '../lib/storage';
-
 export const REGIONALS = {
   'TIMON-MA': { id: '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs', label: 'TIMON - MA' },
   'THE': { id: '1I79E8X9b8O-g1wIc5fsKuO2DW9GCU24uZFkpTEQAcEk', label: 'TERESINA - PI' },
@@ -21,7 +19,7 @@ export const getSpreadsheetId = (regional?: string): string => {
   const normalized = getNormalizedKey(regional);
   
   try {
-    const customId = safeLocalStorage.getItem(`CUSTOM_SPREADSHEET_ID_${normalized}`);
+    const customId = localStorage.getItem(`CUSTOM_SPREADSHEET_ID_${normalized}`);
     if (customId && customId.trim()) {
       return customId.trim();
     }
@@ -45,9 +43,9 @@ export const setCustomSpreadsheetId = (regional: string, id: string) => {
   const normalized = getNormalizedKey(regional);
   try {
     if (id && id.trim()) {
-      safeLocalStorage.setItem(`CUSTOM_SPREADSHEET_ID_${normalized}`, id.trim());
+      localStorage.setItem(`CUSTOM_SPREADSHEET_ID_${normalized}`, id.trim());
     } else {
-      safeLocalStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${normalized}`);
+      localStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${normalized}`);
     }
   } catch (e) {
     console.error('Error saving custom spreadsheet ID', e);
