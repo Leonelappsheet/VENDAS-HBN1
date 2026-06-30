@@ -163,37 +163,43 @@ export function ConfigWarning() {
             </form>
           </div>
 
-          <div className="space-y-3">
-            <p className="text-xs font-bold text-red-800 dark:text-red-200 uppercase">Instruções:</p>
-            <ul className="space-y-2">
-              {status.instructions.map((inst, i) => (
-                <li key={i} className="flex items-start gap-2 text-sm text-red-700 dark:text-red-300">
-                  <span className="w-5 h-5 bg-red-200 dark:bg-red-800 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">
-                    {i + 1}
-                  </span>
-                  {inst}
-                </li>
-              ))}
-            </ul>
-          </div>
+          {status.instructions && status.instructions.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-xs font-bold text-red-800 dark:text-red-200 uppercase">Instruções:</p>
+              <ul className="space-y-2">
+                {status.instructions.map((inst, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm text-red-700 dark:text-red-300">
+                    <span className="w-5 h-5 bg-red-200 dark:bg-red-800 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0">
+                      {i + 1}
+                    </span>
+                    {inst}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <div className="mt-6 flex flex-wrap gap-3">
-            <button 
-              onClick={copyEmail}
-              className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-colors shadow-lg shadow-red-600/20"
-            >
-              {copied ? <Check size={16} /> : <Copy size={16} />}
-              {copied ? 'E-mail Copiado!' : 'Copiar E-mail do Robô'}
-            </button>
-            <a 
-              href={`https://docs.google.com/spreadsheets/d/${status.spreadsheetId}/edit`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-50 dark:hover:bg-red-900/40 transition-colors"
-            >
-              <ExternalLink size={16} />
-              Abrir Planilha
-            </a>
+            {status.serviceAccountEmail && (
+              <button 
+                onClick={copyEmail}
+                className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-colors shadow-lg shadow-red-600/20"
+              >
+                {copied ? <Check size={16} /> : <Copy size={16} />}
+                {copied ? 'E-mail Copiado!' : 'Copiar E-mail do Robô'}
+              </button>
+            )}
+            {status.spreadsheetId && (
+              <a 
+                href={`https://docs.google.com/spreadsheets/d/${status.spreadsheetId}/edit`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-50 dark:hover:bg-red-900/40 transition-colors"
+              >
+                <ExternalLink size={16} />
+                Abrir Planilha
+              </a>
+            )}
           </div>
         </div>
       </div>
