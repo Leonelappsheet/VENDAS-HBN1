@@ -539,12 +539,47 @@ export default function ProductCatalog() {
       // Search Filter
       if (search) {
         const query = search.toLowerCase();
-        return (
-          p.description.toLowerCase().includes(query) ||
-          p.id.toLowerCase().includes(query) ||
-          p.ean.includes(query) ||
-          p.manufacturer.toLowerCase().includes(query)
-        );
+        const priceBr = p.finalPrice.toFixed(2).replace('.', ',');
+        const priceEn = p.finalPrice.toFixed(2);
+        
+        const priceBrWithSymbolSpaced = `r$ ${priceBr}`;
+        const priceBrWithSymbolAttached = `r$${priceBr}`;
+        const priceEnWithSymbolSpaced = `r$ ${priceEn}`;
+        const priceEnWithSymbolAttached = `r$${priceEn}`;
+
+        const salePriceBr = p.salePrice ? p.salePrice.toFixed(2).replace('.', ',') : '';
+        const salePriceEn = p.salePrice ? p.salePrice.toFixed(2) : '';
+        
+        const salePriceBrWithSymbolSpaced = salePriceBr ? `r$ ${salePriceBr}` : '';
+        const salePriceBrWithSymbolAttached = salePriceBr ? `r$${salePriceBr}` : '';
+        const salePriceEnWithSymbolSpaced = salePriceEn ? `r$ ${salePriceEn}` : '';
+        const salePriceEnWithSymbolAttached = salePriceEn ? `r$${salePriceEn}` : '';
+        
+        const combinedText = `
+          ${p.description} 
+          ${p.id} 
+          ${p.ean} 
+          ${p.manufacturer} 
+          ${priceBr} 
+          ${priceEn} 
+          ${priceBrWithSymbolSpaced} 
+          ${priceBrWithSymbolAttached} 
+          ${priceEnWithSymbolSpaced} 
+          ${priceEnWithSymbolAttached} 
+          ${salePriceBr} 
+          ${salePriceEn} 
+          ${salePriceBrWithSymbolSpaced} 
+          ${salePriceBrWithSymbolAttached} 
+          ${salePriceEnWithSymbolSpaced} 
+          ${salePriceEnWithSymbolAttached}
+        `.toLowerCase();
+
+        if (query.includes('%')) {
+          const parts = query.split('%').map(part => part.trim()).filter(part => part.length > 0);
+          return parts.every(part => combinedText.includes(part));
+        } else {
+          return combinedText.includes(query);
+        }
       }
       
       return true;
