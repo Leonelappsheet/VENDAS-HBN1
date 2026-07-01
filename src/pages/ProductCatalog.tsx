@@ -557,14 +557,38 @@ export default function ProductCatalog() {
       case 'price-desc': sortArr.sort((a, b) => b.finalPrice - a.finalPrice); break;
       case 'discount': sortArr.sort((a, b) => b.discount - a.discount); break;
       case 'stock': sortArr.sort((a, b) => b.stock - a.stock); break;
-      case 'az': sortArr.sort((a, b) => a.description.localeCompare(b.description)); break;
-      case 'za': sortArr.sort((a, b) => b.description.localeCompare(a.description)); break;
+      case 'az': 
+        sortArr.sort((a, b) => {
+          const aHasStock = a.stock > 0;
+          const bHasStock = b.stock > 0;
+          if (aHasStock && !bHasStock) return -1;
+          if (!aHasStock && bHasStock) return 1;
+          return a.description.localeCompare(b.description);
+        }); 
+        break;
+      case 'za': 
+        sortArr.sort((a, b) => {
+          const aHasStock = a.stock > 0;
+          const bHasStock = b.stock > 0;
+          if (aHasStock && !bHasStock) return -1;
+          if (!aHasStock && bHasStock) return 1;
+          return b.description.localeCompare(a.description);
+        }); 
+        break;
       case 'recent': sortArr.sort((a, b) => {
         const dateA = a.discountExpiryDate ? new Date(a.discountExpiryDate).getTime() : 0;
         const dateB = b.discountExpiryDate ? new Date(b.discountExpiryDate).getTime() : 0;
         return dateB - dateA;
       }); break;
-      default: break;
+      default: 
+        sortArr.sort((a, b) => {
+          const aHasStock = a.stock > 0;
+          const bHasStock = b.stock > 0;
+          if (aHasStock && !bHasStock) return -1;
+          if (!aHasStock && bHasStock) return 1;
+          return a.description.localeCompare(b.description);
+        });
+        break;
     }
 
     return sortArr;
