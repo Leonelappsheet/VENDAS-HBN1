@@ -4,47 +4,45 @@ import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+import { cloudflare } from "@cloudflare/vite-plugin";
+
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
-    plugins: [
-      react(), 
-      tailwindcss(),
-      VitePWA({
-        registerType: 'autoUpdate',
-        workbox: {
-          maximumFileSizeToCacheInBytes: 5000000,
-        },
-        manifest: {
-          name: 'VENDAS HBN1',
-          short_name: 'VENDAS HBN1',
-          description: 'Sistema de gestão de vendas HBN1',
-          theme_color: '#FF6B00',
-          background_color: '#ffffff',
-          display: 'standalone',
-          icons: [
-            {
-              src: '/logo.svg',
-              sizes: '192x192',
-              type: 'image/svg+xml',
-              purpose: 'any'
-            },
-            {
-              src: '/logo.svg',
-              sizes: '512x512',
-              type: 'image/svg+xml',
-              purpose: 'any'
-            },
-            {
-              src: '/logo.svg',
-              sizes: '192x192',
-              type: 'image/svg+xml',
-              purpose: 'maskable'
-            }
-          ]
-        }
-      })
-    ],
+    plugins: [react(), tailwindcss(), VitePWA({
+      registerType: 'autoUpdate',
+      workbox: {
+        maximumFileSizeToCacheInBytes: 5000000,
+      },
+      manifest: {
+        name: 'VENDAS HBN1',
+        short_name: 'VENDAS HBN1',
+        description: 'Sistema de gestão de vendas HBN1',
+        theme_color: '#FF6B00',
+        background_color: '#ffffff',
+        display: 'standalone',
+        icons: [
+          {
+            src: '/logo.svg',
+            sizes: '192x192',
+            type: 'image/svg+xml',
+            purpose: 'any'
+          },
+          {
+            src: '/logo.svg',
+            sizes: '512x512',
+            type: 'image/svg+xml',
+            purpose: 'any'
+          },
+          {
+            src: '/logo.svg',
+            sizes: '192x192',
+            type: 'image/svg+xml',
+            purpose: 'maskable'
+          }
+        ]
+      }
+    }), cloudflare()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },
