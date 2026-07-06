@@ -587,6 +587,8 @@ export default function ProductCatalog() {
 
     // Advanced Sorting
     const sortArr = [...result];
+    const isPromoter = profile?.role === 'promotor';
+
     switch (sortBy) {
       case 'price-asc': sortArr.sort((a, b) => a.finalPrice - b.finalPrice); break;
       case 'price-desc': sortArr.sort((a, b) => b.finalPrice - a.finalPrice); break;
@@ -594,6 +596,9 @@ export default function ProductCatalog() {
       case 'stock': sortArr.sort((a, b) => b.stock - a.stock); break;
       case 'az': 
         sortArr.sort((a, b) => {
+          if (isPromoter) {
+            return a.description.localeCompare(b.description);
+          }
           const aHasStock = a.stock > 0;
           const bHasStock = b.stock > 0;
           if (aHasStock && !bHasStock) return -1;
@@ -603,6 +608,9 @@ export default function ProductCatalog() {
         break;
       case 'za': 
         sortArr.sort((a, b) => {
+          if (isPromoter) {
+            return b.description.localeCompare(a.description);
+          }
           const aHasStock = a.stock > 0;
           const bHasStock = b.stock > 0;
           if (aHasStock && !bHasStock) return -1;
@@ -617,6 +625,9 @@ export default function ProductCatalog() {
       }); break;
       default: 
         sortArr.sort((a, b) => {
+          if (isPromoter) {
+            return a.description.localeCompare(b.description);
+          }
           const aHasStock = a.stock > 0;
           const bHasStock = b.stock > 0;
           if (aHasStock && !bHasStock) return -1;
@@ -627,7 +638,7 @@ export default function ProductCatalog() {
     }
 
     return sortArr;
-  }, [products, activeTab, search, selectedManufacturers, selectedCategories, statusFilters, sortBy]);
+  }, [products, activeTab, search, selectedManufacturers, selectedCategories, statusFilters, sortBy, profile?.role]);
 
   const displayedProducts = useMemo(() => {
     return filteredProducts.slice(0, displayLimit);
