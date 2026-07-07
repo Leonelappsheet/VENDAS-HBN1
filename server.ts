@@ -52,8 +52,8 @@ const getRequestSpreadsheetId = (req: express.Request) => {
   const headerId = req.headers['x-spreadsheet-id'] as string || req.query.spreadsheetId as string;
   
   const defaultTimon = '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs';
-  const defaultThe = '1I79E8X9b8O-g1wIc5fsKuO2DW9GCU24uZFkpTEQAcEk';
-  const defaultImp = '1z2a_wzBrVPUEk8RrTEsIV9MsV9XBZQd9eZM6AwMwVyE';
+  const defaultThe = '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs';
+  const defaultImp = '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs';
 
   const envSheetId = (process.env.GOOGLE_SHEET_ID || "").trim();
   const envIdDaPlanilha = (process.env.ID_da_planilha || "").trim();
@@ -1376,18 +1376,9 @@ export async function startServer() {
 export { app };
 export default app;
 
-// Support for serverless deployments (Vercel/Netlify)
-const isMainModule = () => {
-  if (process.env.NETLIFY || process.env.VERCEL) return false;
-  try {
-    const currentPath = fileURLToPath(import.meta.url);
-    const mainPath = path.resolve(process.argv[1] || "");
-    return mainPath.includes(currentPath) || currentPath.includes(mainPath);
-  } catch (e) {
-    return false;
-  }
-};
+// Support for deployments (Vercel/Netlify vs normal Server containers like Cloud Run)
+const isServerlessEnv = !!(process.env.NETLIFY || process.env.VERCEL);
 
-if (isMainModule()) {
+if (!isServerlessEnv) {
   startServer().catch(console.error);
 }

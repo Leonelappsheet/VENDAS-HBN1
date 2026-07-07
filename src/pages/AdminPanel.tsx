@@ -1080,6 +1080,37 @@ export default function AdminPanel() {
     
     var ss = SpreadsheetApp.openById(sheetId);
     
+    if (action === "read-sheet") {
+      var sheetName = data.sheetName;
+      var targetSheet = ss.getSheetByName(sheetName);
+      if (!targetSheet) {
+        return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Aba '" + sheetName + "' nao encontrada"}))
+          .setMimeType(ContentService.MimeType.JSON)
+          .setHeaders(corsHeaders);
+      }
+      var values = targetSheet.getDataRange().getValues();
+      var headers = values[0];
+      var result = [];
+      for (var r = 1; r < values.length; r++) {
+        var row = values[r];
+        var rowData = {};
+        var hasData = false;
+        for (var c = 0; c < headers.length; c++) {
+          var h = headers[c];
+          if (h) {
+            rowData[h] = row[c];
+            if (row[c] !== undefined && row[c] !== null && String(row[c]).trim() !== "") {
+              hasData = true;
+            }
+          }
+        }
+        if (hasData) result.push(rowData);
+      }
+      return ContentService.createTextOutput(JSON.stringify({sucesso: true, data: result}))
+        .setMimeType(ContentService.MimeType.JSON)
+        .setHeaders(corsHeaders);
+    }
+    
     if (action === "update-image") {
       var id = data.id;
       var imageUrl = data.imageUrl;

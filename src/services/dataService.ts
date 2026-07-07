@@ -34,6 +34,20 @@ export const getApiUrl = (): string => {
     return envUrl;
   }
 
+  // Fallback inteligente para quando o app está hospedado fora do Netlify/localhost
+  // (por exemplo, no Cloudflare Workers ou GitHub Pages) e não tem backend próprio.
+  if (typeof window !== 'undefined') {
+    const hostname = window.location.hostname;
+    const isNetlify = hostname.includes('netlify.app') || hostname.includes('netlify.com');
+    const isLocalOrInternal = hostname === 'localhost' || 
+                             hostname === '127.0.0.1' || 
+                             hostname.includes('run.app');
+    
+    if (!isNetlify && !isLocalOrInternal) {
+      return 'https://ais-pre-nbovrry5l37awj3udhoyr6-141290312650.us-west2.run.app';
+    }
+  }
+
   return '';
 };
 
@@ -130,6 +144,34 @@ let currentRegional = 'TIMON-MA';
 async function fetchDirectlyFromGoogleSheets(sheetName: string, customSpreadsheetId?: string): Promise<any[]> {
   const spreadsheetId = customSpreadsheetId || getSpreadsheetId(currentRegional);
   console.log(`[Direct Fetch] Falling back to direct Google Sheets fetching for sheet: "${sheetName}" using spreadsheetId: "${spreadsheetId}"`);
+  
+  // Se o Apps Script URL estiver configurado, tente ler via Apps Script primeiro (suporta planilhas privadas e evita CORS)
+  const appsScriptUrl = getAppsScriptUrl();
+  if (appsScriptUrl) {
+    try {
+      console.log(`[Direct Fetch] Tentando ler aba "${sheetName}" via Google Apps Script Web App...`);
+      const response = await fetch(appsScriptUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain'
+        },
+        body: JSON.stringify({
+          action: 'read-sheet',
+          spreadsheetId,
+          sheetName
+        })
+      });
+      const resData = await response.json();
+      if (resData && resData.data && Array.isArray(resData.data)) {
+        console.log(`[Direct Fetch] Sucesso ao ler ${resData.data.length} linhas de "${sheetName}" via Apps Script.`);
+        return resData.data;
+      } else if (resData && resData.error) {
+        console.warn(`[Direct Fetch] Erro retornado pelo Apps Script para "${sheetName}": ${resData.error}`);
+      }
+    } catch (appsScriptErr: any) {
+      console.warn(`[Direct Fetch] Falha ao ler via Apps Script para "${sheetName}" (${appsScriptErr.message}). Prosseguindo com Gviz/CSV fallback.`);
+    }
+  }
   
   // Special case for usuarios sheet: fetch raw CSV via gid 2088810725 to bypass Gviz cell type coercion/inference issues.
   // This ensures alphanumeric passwords (like "adminhbn1" or "admin123") do not get converted to null.

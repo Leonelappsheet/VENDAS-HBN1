@@ -47,6 +47,9 @@ function doPost(e) {
     var responseData;
     
     switch (action) {
+      case 'read-sheet':
+        responseData = readSheet(spreadsheetId, postData.sheetName);
+        break;
       case 'save-order':
         responseData = saveOrder(spreadsheetId, postData.order);
         break;
@@ -72,6 +75,55 @@ function doPost(e) {
 function buildJSONResponse(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Lê os dados de uma aba específica da planilha e retorna como uma lista de objetos chave-valor
+ */
+function readSheet(spreadsheetId, sheetName) {
+  try {
+    var ss = SpreadsheetApp.openById(spreadsheetId);
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      return { error: "Aba '" + sheetName + "' não encontrada no arquivo do Sheets." };
+    }
+    
+    var values = sheet.getDataRange().getValues();
+    if (values.length === 0) {
+      return { data: [] };
+    }
+    
+    var headers = values[0];
+    var data = [];
+    
+    for (var i = 1; i < values.length; i++) {
+      var row = values[i];
+      var rowData = {};
+      var hasData = false;
+      
+      for (var j = 0; j < headers.length; j++) {
+        var header = String(headers[j]).trim();
+        if (header) {
+          var val = row[j];
+          if (val instanceof Date) {
+            val = val.toISOString();
+          }
+          rowData[header] = val;
+          if (val !== undefined && val !== null && String(val).trim() !== '') {
+            hasData = true;
+          }
+        }
+      }
+      
+      if (hasData) {
+        data.push(rowData);
+      }
+    }
+    
+    return { data: data };
+  } catch (error) {
+    return { error: error.message || error.toString() };
+  }
 }
 
 /**

@@ -1,7 +1,7 @@
 export const REGIONALS = {
   'TIMON-MA': { id: '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs', label: 'TIMON - MA' },
-  'THE': { id: '1I79E8X9b8O-g1wIc5fsKuO2DW9GCU24uZFkpTEQAcEk', label: 'TERESINA - PI' },
-  'IMP': { id: '1z2a_wzBrVPUEk8RrTEsIV9MsV9XBZQd9eZM6AwMwVyE', label: 'IMPERATRIZ - MA' }
+  'THE': { id: '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs', label: 'TERESINA - PI' },
+  'IMP': { id: '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs', label: 'IMPERATRIZ - MA' }
 } as const;
 
 export type RegionalKey = keyof typeof REGIONALS;
