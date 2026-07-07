@@ -71,5 +71,9 @@ service cloud.firestore {
       // Carts are keyed by clientId or userId
       allow read, write: if isSignedIn();
     }
+
+    match /client_photos/{photoId} {
+      allow read, write: if isSignedIn();
+    }
   }
 }

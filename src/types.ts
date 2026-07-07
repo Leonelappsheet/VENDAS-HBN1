@@ -26,6 +26,7 @@ export interface Client {
   buyer: string;
   phone: string;
   regional: string;
+  photo?: string;
 }
 
 export interface OrderItem extends Product {

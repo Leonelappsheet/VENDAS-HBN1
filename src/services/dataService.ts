@@ -571,6 +571,21 @@ export const dataService = {
     const cacheKey = `clients_${currentRegional}`;
     const cachedClients = this.getCache(cacheKey) as Client[] | null;
 
+    // 1. Fetch client photos from Firestore
+    let photosMap: Record<string, string> = {};
+    try {
+      const q = query(collection(db, 'client_photos'));
+      const querySnapshot = await getDocs(q);
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        if (data && data.clientId && data.photoUrl) {
+          photosMap[String(data.clientId).trim()] = data.photoUrl;
+        }
+      });
+    } catch (e) {
+      console.error('Error fetching client photos from Firestore:', e);
+    }
+
     try {
       const response = await safeFetch(`/api/data/Clientes`, 'Clientes', {
         headers: this.getHeaders(),
@@ -582,7 +597,14 @@ export const dataService = {
         } else {
           console.warn('Expected array from Clientes, got non-array structure:', typeof response.data);
         }
-        return cachedClients || [];
+        
+        let clients = cachedClients || [];
+        // Map photos even on cached clients
+        clients = clients.map(c => ({
+          ...c,
+          photo: photosMap[String(c.id).trim()] || c.photo || ''
+        }));
+        return clients;
       }
       let clients = response.data.map((r: any, i: number) => {
         const findVal = (names: string[]) => {
@@ -607,8 +629,10 @@ export const dataService = {
           return undefined;
         };
 
+        const id = String(findVal(['IDCliente', 'ID', 'CODIGO', 'COD']) || i + 1);
+
         return {
-          id: String(findVal(['IDCliente', 'ID', 'CODIGO', 'COD']) || i + 1),
+          id,
           name: findVal(['Nome', 'RAZAO SOCIAL', 'NOME COMPLETO']) || '',
           tradeName: findVal(['Nome Fantasia', 'FANTASIA', 'LOJA']) || '',
           cnpj: findVal(['CNPJ', 'CPF/CNPJ', 'DOCUMENTO']) || '',
@@ -619,7 +643,8 @@ export const dataService = {
           state: findVal(['Estado', 'ESTADO', 'UF']) || '',
           buyer: findVal(['Comprador', 'COMPRADOR', 'CONTATO']) || '',
           phone: findVal(['Celular', 'TEL', 'TELEFONE', 'WHATSAPP', 'FONE']) || '',
-          regional: findVal(['Regional', 'REGIONAL', 'ZONA', 'SETOR']) || 'TIMON-MA'
+          regional: findVal(['Regional', 'REGIONAL', 'ZONA', 'SETOR']) || 'TIMON-MA',
+          photo: findVal(['Foto', 'FOTO', 'Imagem', 'URL', 'LinkFoto', 'Link']) || photosMap[id.trim()] || ''
         } as Client;
       });
 
@@ -631,7 +656,10 @@ export const dataService = {
       return clients;
     } catch (error: any) {
       if (cachedClients) {
-        let clients = cachedClients;
+        let clients = cachedClients.map(c => ({
+          ...c,
+          photo: photosMap[String(c.id).trim()] || c.photo || ''
+        }));
         if (!isAdmin && sellerName) {
           clients = clients.filter((c: Client) => c.seller.toLowerCase().includes(sellerName.toLowerCase()));
         }
@@ -641,6 +669,45 @@ export const dataService = {
       const details = error.response?.data?.details || '';
       console.error('Error fetching clients from Sheets:', serverError, details);
       return [];
+    }
+  },
+
+  async updateClientPhoto(clientId: string, photoUrl: string) {
+    try {
+      const q = query(collection(db, 'client_photos'), where('clientId', '==', clientId));
+      const querySnapshot = await getDocs(q);
+      
+      if (!querySnapshot.empty) {
+        const docRef = querySnapshot.docs[0].ref;
+        await updateDoc(docRef, {
+          photoUrl,
+          updatedAt: new Date().toISOString()
+        });
+      } else {
+        await addDoc(collection(db, 'client_photos'), {
+          clientId,
+          photoUrl,
+          updatedAt: new Date().toISOString()
+        });
+      }
+      
+      // Update cache
+      const cacheKey = `clients_${currentRegional}`;
+      const cachedClients = this.getCache(cacheKey) as Client[] | null;
+      if (cachedClients) {
+        const updated = cachedClients.map(c => {
+          if (String(c.id).trim() === String(clientId).trim()) {
+            return { ...c, photo: photoUrl };
+          }
+          return c;
+        });
+        this.setCache(cacheKey, updated);
+      }
+      return true;
+    } catch (error) {
+      console.error('Error updating client photo in Firestore:', error);
+      handleFirestoreError(error, OperationType.WRITE, 'client_photos');
+      return false;
     }
   },
 

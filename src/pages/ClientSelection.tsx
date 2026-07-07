@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dataService } from '../services/dataService';
 import { Client } from '../types';
-import { Search, LogOut, LayoutDashboard, FileUp, MapPin, User, Moon, Sun, ChevronRight, Store, Calendar, Settings, Lock, Eye, EyeOff, Navigation, ShoppingCart, RefreshCw } from 'lucide-react';
+import { Search, LogOut, LayoutDashboard, FileUp, MapPin, User, Moon, Sun, ChevronRight, Store, Calendar, Settings, Lock, Eye, EyeOff, Navigation, ShoppingCart, RefreshCw, Camera, Phone, Mail, FileText, X, Plus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { toast } from 'sonner';
@@ -24,6 +24,7 @@ export default function ClientSelection() {
   const [showProfile, setShowProfile] = useState(false);
   const [showVisitModal, setShowVisitModal] = useState<Client | null>(null);
   const [showMapModal, setShowMapModal] = useState<Client | null>(null);
+  const [showDetailsModal, setShowDetailsModal] = useState<Client | null>(null);
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [passwordData, setPasswordData] = useState({ current: '', new: '', confirm: '' });
   const [showPasswords, setShowPasswords] = useState({ current: false, new: false, confirm: false });
@@ -93,6 +94,31 @@ export default function ClientSelection() {
   const handleSelectClient = (client: Client) => {
     sessionStorage.setItem('selectedClient', JSON.stringify(client));
     navigate('/catalog');
+  };
+
+  const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>, client: Client) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 512000) {
+      toast.error("Por favor, escolha uma foto menor que 500KB para melhor desempenho.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64String = reader.result as string;
+      const toastId = toast.loading("Salvando foto do cliente...");
+      const success = await dataService.updateClientPhoto(client.id, base64String);
+      if (success) {
+        toast.success("Foto salva com sucesso!", { id: toastId });
+        setClients(prev => prev.map(c => c.id === client.id ? { ...c, photo: base64String } : c));
+        setShowDetailsModal(prev => prev && prev.id === client.id ? { ...prev, photo: base64String } : prev);
+      } else {
+        toast.error("Erro ao salvar a foto.", { id: toastId });
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   return (
@@ -231,15 +257,19 @@ export default function ClientSelection() {
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: index * 0.05 }}
-                      onClick={() => handleSelectClient(client)}
+                      onClick={() => setShowDetailsModal(client)}
                       whileHover={{ scale: 1.02, backgroundColor: darkMode ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.8)" }}
                       whileTap={{ scale: 0.98 }}
                       className="bg-white dark:bg-[#1E1E1E] p-4 rounded-2xl shadow-sm border-2 border-transparent hover:border-orange-500 transition-all cursor-pointer flex items-start gap-4 group"
                     >
-                      <div className="w-12 h-12 bg-orange-50 dark:bg-orange-900/20 rounded-xl flex items-center justify-center text-orange-600 shrink-0 relative">
-                        <Store size={24} />
+                      <div className="w-12 h-12 bg-orange-50 dark:bg-orange-900/20 rounded-xl flex items-center justify-center text-orange-600 shrink-0 relative overflow-hidden">
+                        {client.photo ? (
+                          <img src={client.photo} alt={client.tradeName || client.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <Store size={24} />
+                        )}
                         {hasCart && (
-                          <div className="absolute -top-1 -right-1 w-5 h-5 bg-orange-500 text-white rounded-full flex items-center justify-center shadow-lg animate-pulse" title="Venda Iniciada">
+                          <div className="absolute -top-1 -right-1 w-5 h-5 bg-orange-500 text-white rounded-full flex items-center justify-center shadow-lg animate-pulse z-10" title="Venda Iniciada">
                             <ShoppingCart size={12} />
                           </div>
                         )}
@@ -568,6 +598,155 @@ export default function ClientSelection() {
                     </div>
                   </div>
                 )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Client Details Modal */}
+      <AnimatePresence>
+        {showDetailsModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white dark:bg-[#1E1E1E] rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl flex flex-col my-8"
+            >
+              {/* Header with gradient or cover */}
+              <div className="relative p-6 bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white flex flex-col items-center pt-10">
+                <button 
+                  onClick={() => setShowDetailsModal(null)}
+                  className="absolute right-4 top-4 w-8 h-8 bg-white/20 hover:bg-white/30 text-white rounded-full flex items-center justify-center transition-colors"
+                >
+                  <X size={18} />
+                </button>
+                
+                {/* Client Photo upload/view */}
+                <div className="relative group mb-4">
+                  <div className="w-28 h-28 rounded-full border-4 border-white overflow-hidden bg-white/10 flex items-center justify-center text-white shadow-xl">
+                    {showDetailsModal.photo ? (
+                      <img src={showDetailsModal.photo} alt={showDetailsModal.tradeName || showDetailsModal.name} className="w-full h-full object-cover" />
+                    ) : (
+                      <Store size={48} className="opacity-95" />
+                    )}
+                  </div>
+                  
+                  {/* Edit/Upload trigger */}
+                  <label className="absolute bottom-0 right-0 p-2 bg-orange-600 text-white rounded-full shadow-lg border-2 border-white cursor-pointer hover:bg-orange-700 transition-colors flex items-center justify-center">
+                    <Camera size={16} />
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={(e) => handlePhotoChange(e, showDetailsModal)} 
+                      className="hidden" 
+                    />
+                  </label>
+                </div>
+
+                <h3 className="font-black text-xl text-center leading-tight">
+                  {showDetailsModal.tradeName || showDetailsModal.name}
+                </h3>
+                {showDetailsModal.tradeName && showDetailsModal.name !== showDetailsModal.tradeName && (
+                  <p className="text-xs opacity-90 text-center mt-1 font-medium">{showDetailsModal.name}</p>
+                )}
+                <span className="bg-white/20 text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-wider mt-3">
+                  Código: {showDetailsModal.id}
+                </span>
+              </div>
+
+              {/* Client Info Body */}
+              <div className="p-6 space-y-4 max-h-[50vh] overflow-y-auto">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {showDetailsModal.cnpj && (
+                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">CNPJ / CPF</p>
+                      <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.cnpj}</p>
+                    </div>
+                  )}
+
+                  {showDetailsModal.phone && (
+                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl flex items-center gap-3">
+                      <div className="p-2 bg-green-50 dark:bg-green-900/20 text-green-600 rounded-xl">
+                        <Phone size={14} />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-[10px] text-gray-400 font-bold uppercase">Telefone</p>
+                        <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.phone}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {showDetailsModal.email && (
+                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl flex items-center gap-3 col-span-1 sm:col-span-2">
+                      <div className="p-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-xl">
+                        <Mail size={14} />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-[10px] text-gray-400 font-bold uppercase">Email</p>
+                        <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5 break-all">{showDetailsModal.email}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {showDetailsModal.buyer && (
+                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl col-span-1 sm:col-span-2">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">Comprador / Contato</p>
+                      <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.buyer}</p>
+                    </div>
+                  )}
+
+                  {showDetailsModal.address && (
+                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl flex items-start gap-3 col-span-1 sm:col-span-2">
+                      <div className="p-2 bg-orange-50 dark:bg-orange-900/20 text-orange-600 rounded-xl mt-0.5">
+                        <MapPin size={14} />
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-[10px] text-gray-400 font-bold uppercase">Endereço</p>
+                        <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.address}</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">{showDetailsModal.city} - {showDetailsModal.state}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {showDetailsModal.seller && (
+                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">Vendedor Responsável</p>
+                      <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.seller}</p>
+                    </div>
+                  )}
+
+                  {showDetailsModal.regional && (
+                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl">
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">Regional</p>
+                      <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{getRegionalLabel(showDetailsModal.regional)}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="p-6 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 flex flex-col sm:flex-row gap-3">
+                <motion.button 
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => setShowDetailsModal(null)}
+                  className="flex-1 py-3 bg-white dark:bg-[#1E1E1E] border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-xl shadow-sm transition-all"
+                >
+                  Fechar
+                </motion.button>
+                <motion.button 
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => {
+                    handleSelectClient(showDetailsModal);
+                    setShowDetailsModal(null);
+                  }}
+                  className="flex-1 py-3 bg-gradient-to-r from-orange-500 to-pink-500 text-white font-black rounded-xl shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2"
+                >
+                  <ShoppingCart size={18} /> Fazer Pedido
+                </motion.button>
               </div>
             </motion.div>
           </div>
