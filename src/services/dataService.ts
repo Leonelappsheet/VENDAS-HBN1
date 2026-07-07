@@ -34,20 +34,6 @@ export const getApiUrl = (): string => {
     return envUrl;
   }
 
-  // Se o site estiver rodando em domínio externo (ex: leonelamorimm.workers.dev)
-  // e não possuir uma URL personalizada, fazemos o fallback automático para o servidor
-  // ativo na Cloud Run da AI Studio, que possui as credenciais seguras do Google Sheets.
-  if (typeof window !== 'undefined') {
-    const hostname = window.location.hostname;
-    const isLocalOrInternal = hostname === 'localhost' || 
-                             hostname === '127.0.0.1' || 
-                             hostname.includes('run.app');
-    
-    if (!isLocalOrInternal) {
-      return 'https://ais-pre-nbovrry5l37awj3udhoyr6-141290312650.us-west2.run.app';
-    }
-  }
-
   return '';
 };
 
