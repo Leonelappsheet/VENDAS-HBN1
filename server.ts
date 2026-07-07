@@ -966,6 +966,11 @@ apiRouter.post("/catalog/update", async (req, res) => {
       return isPercent ? `${s}%` : s;
     };
 
+    const idsToRemoveFromOfertas = new Set<string>();
+    const eansToRemoveFromOfertas = new Set<string>();
+    let promotedOffersCount = 0;
+    let updatedOffersCount = 0;
+
     rowsToProcess.forEach((item: any) => {
       let newId = "";
       let newEan = "";
@@ -1117,6 +1122,65 @@ apiRouter.post("/catalog/update", async (req, res) => {
         });
         updatedCount++;
         updatedProductsLog.push(`${newDesc || "Sem Descrição"} (ID: ${newId || '-'}) → Est: ${newStock || '0'} | Preço: R$ ${formatBrazilian(newPrice)} | Desc: ${formatBrazilian(newDiscount, true)} | Final: R$ ${formatBrazilian(newFinal)}`);
+
+        // Check if we need to promote this updated product to Ofertas sheet
+        if (newDiscount > 0) {
+          const hasOfferEntry = allMatchingEntries.some(e => e.sheetName === "Ofertas");
+          if (hasOfferEntry) {
+            updatedOffersCount++;
+          } else {
+            const offersHeaders = sheetData["Ofertas"]?.headers || sheetData["Produtos"]?.headers || [];
+            const offersRowLength = Math.max(offersHeaders.length, 8);
+            const newOffersRow = new Array(offersRowLength).fill("");
+            newOffersRow[idIdx] = newId;
+            newOffersRow[eanIdx] = newEan;
+            newOffersRow[descIdx] = newDesc;
+            newOffersRow[stockIdx] = newStock;
+            newOffersRow[priceIdx] = formatBrazilian(newPrice);
+            newOffersRow[discIdx] = formatBrazilian(newDiscount, true);
+            newOffersRow[finalIdx] = formatBrazilian(newFinal);
+            newOffersRow[validIdx] = newValid;
+
+            const industryName = industria.split(' ')[0].toUpperCase();
+            const offFabColIdx = offersHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("fabricante"));
+            if (offFabColIdx !== -1) newOffersRow[offFabColIdx] = industryName;
+
+            // Copy Category and Photo from Products row if available
+            const prodRow = allMatchingEntries.find(e => e.sheetName === "Produtos")?.row;
+            if (prodRow) {
+              const prodHeaders = sheetData["Produtos"]?.headers || [];
+              const catColIdx = prodHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("categoria"));
+              const photoColIdx = prodHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("foto"));
+              
+              const offCatColIdx = offersHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("categoria"));
+              const offPhotoColIdx = offersHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("foto"));
+
+              if (catColIdx !== -1 && offCatColIdx !== -1) newOffersRow[offCatColIdx] = prodRow[catColIdx] || "";
+              if (photoColIdx !== -1 && offPhotoColIdx !== -1) newOffersRow[offPhotoColIdx] = prodRow[photoColIdx] || "";
+            }
+
+            if (!sheetData["Ofertas"]) {
+              sheetData["Ofertas"] = { rows: [["ID", "EAN", "Descrição", "Estoque", "Preço Venda", "Desconto", "Preço Final", "Validade Desconto", "Categoria", "Fabricante", "Foto"]], headers: ["ID", "EAN", "Descrição", "Estoque", "Preço Venda", "Desconto", "Preço Final", "Validade Desconto", "Categoria", "Fabricante", "Foto"] };
+            }
+            sheetData["Ofertas"].rows.push(newOffersRow);
+            promotedOffersCount++;
+            
+            // Register this new entry to existingProductsMap so we don't duplicate if processed again
+            const entry = { row: newOffersRow, sheetName: "Ofertas" };
+            if (newId) {
+              if (!existingProductsMap.has(newId)) existingProductsMap.set(newId, []);
+              existingProductsMap.get(newId)!.push(entry);
+            }
+            if (newEan) {
+              if (!existingProductsMap.has(newEan)) existingProductsMap.set(newEan, []);
+              existingProductsMap.get(newEan)!.push(entry);
+            }
+          }
+        } else {
+          // If discount is 0 or less, mark for removal from Ofertas sheet
+          if (newId) idsToRemoveFromOfertas.add(newId);
+          if (newEan) eansToRemoveFromOfertas.add(newEan);
+        }
       } else {
         const industryName = industria.split(' ')[0].toUpperCase();
         // Add as new product to "Produtos" sheet
@@ -1149,12 +1213,72 @@ apiRouter.post("/catalog/update", async (req, res) => {
           if (!existingProductsMap.has(newEan)) existingProductsMap.set(newEan, []);
           existingProductsMap.get(newEan)!.push(entry);
         }
+
+        // Add to Ofertas sheet as well if newDiscount > 0
+        if (newDiscount > 0) {
+          if (!sheetData["Ofertas"]) {
+            sheetData["Ofertas"] = { rows: [["ID", "EAN", "Descrição", "Estoque", "Preço Venda", "Desconto", "Preço Final", "Validade Desconto", "Categoria", "Fabricante", "Foto"]], headers: ["ID", "EAN", "Descrição", "Estoque", "Preço Venda", "Desconto", "Preço Final", "Validade Desconto", "Categoria", "Fabricante", "Foto"] };
+          }
+          const offersHeaders = sheetData["Ofertas"]?.headers || headers || [];
+          const offersRowLength = Math.max(offersHeaders.length, 8);
+          const newOffersRow = new Array(offersRowLength).fill("");
+          newOffersRow[idIdx] = newId;
+          newOffersRow[eanIdx] = newEan;
+          newOffersRow[descIdx] = newDesc;
+          newOffersRow[stockIdx] = newStock;
+          newOffersRow[priceIdx] = formatBrazilian(newPrice);
+          newOffersRow[discIdx] = formatBrazilian(newDiscount, true);
+          newOffersRow[finalIdx] = formatBrazilian(newFinal);
+          newOffersRow[validIdx] = newValid;
+          
+          const offFabColIdx = offersHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("fabricante"));
+          if (offFabColIdx !== -1) newOffersRow[offFabColIdx] = industryName;
+          
+          sheetData["Ofertas"].rows.push(newOffersRow);
+          promotedOffersCount++;
+          
+          const offEntry = { row: newOffersRow, sheetName: "Ofertas" };
+          if (newId) {
+            if (!existingProductsMap.has(newId)) existingProductsMap.set(newId, []);
+            existingProductsMap.get(newId)!.push(offEntry);
+          }
+          if (newEan) {
+            if (!existingProductsMap.has(newEan)) existingProductsMap.set(newEan, []);
+            existingProductsMap.get(newEan)!.push(offEntry);
+          }
+        }
       }
     });
+
+    let removedOffersCount = 0;
+    if (sheetData["Ofertas"]) {
+      const originalRows = sheetData["Ofertas"].rows;
+      const filteredRows = [
+        originalRows[0],
+        ...originalRows.slice(1).filter(row => {
+          const id = String(row[idIdx] || "").trim();
+          const rawEan = String(row[eanIdx] || "").trim().replace(/^'/, '');
+          const ean = normalizeEAN(rawEan);
+          
+          const shouldRemove = (id && idsToRemoveFromOfertas.has(id)) || (ean && eansToRemoveFromOfertas.has(ean));
+          if (shouldRemove) {
+            removedOffersCount++;
+          }
+          return !shouldRemove;
+        })
+      ];
+      sheetData["Ofertas"].rows = filteredRows;
+    }
 
     log.push(`Processamento concluído para ${industria}.`);
     log.push(`Resumo: ${updatedCount} produtos existentes foram atualizados.`);
     log.push(`Resumo: ${newCount} novos produtos foram adicionados.`);
+    log.push(`Resumo de Ofertas: ${promotedOffersCount} novos produtos promovidos à aba Ofertas.`);
+    log.push(`Resumo de Ofertas: ${updatedOffersCount} ofertas existentes atualizadas.`);
+    if (removedOffersCount > 0) {
+      log.push(`Resumo de Ofertas: ${removedOffersCount} produtos removidos da aba Ofertas (desconto zerado).`);
+    }
+
     if (clearedProductIdsAndEans.size > 0) {
       log.push(`Resumo: ${clearedProductIdsAndEans.size} produtos desta indústria que não constavam na nova planilha tiveram Estoque e Preços apagados/bloqueados.`);
     }
