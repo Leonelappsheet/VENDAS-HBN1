@@ -3,13 +3,34 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { viteSingleFile } from 'vite-plugin-singlefile';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
-  return {
-    plugins: [
-      react(), 
-      tailwindcss(),
+  const isGasBuild = process.env.BUILD_GAS === 'true';
+
+  const plugins: any[] = [
+    react(), 
+    tailwindcss(),
+  ];
+
+  if (isGasBuild) {
+    plugins.push(viteSingleFile());
+    plugins.push({
+      name: 'pwa-mock',
+      resolveId(id) {
+        if (id === 'virtual:pwa-register') {
+          return id;
+        }
+      },
+      load(id) {
+        if (id === 'virtual:pwa-register') {
+          return 'export function registerSW() { return () => {}; }';
+        }
+      }
+    });
+  } else {
+    plugins.push(
       VitePWA({
         registerType: 'autoUpdate',
         workbox: {
@@ -44,7 +65,11 @@ export default defineConfig(({mode}) => {
           ]
         }
       })
-    ],
+    );
+  }
+
+  return {
+    plugins,
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },
@@ -58,7 +83,7 @@ export default defineConfig(({mode}) => {
       sourcemap: false,
       chunkSizeWarningLimit: 1200,
       rollupOptions: {
-        output: {
+        output: isGasBuild ? {} : {
           manualChunks(id) {
             if (id.includes('node_modules')) {
               if (id.includes('firebase')) {
@@ -84,7 +109,7 @@ export default defineConfig(({mode}) => {
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
+      // Do not modifyâ€”file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
     },
   };

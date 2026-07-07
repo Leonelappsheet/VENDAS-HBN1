@@ -258,6 +258,12 @@ export default function ClientSelection() {
                     {client.tradeName && client.name !== client.tradeName && (
                       <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{client.name}</p>
                     )}
+                    {client.address && (
+                      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-1">
+                        <MapPin size={12} className="text-gray-400 shrink-0" />
+                        <span className="truncate">{client.address}</span>
+                      </p>
+                    )}
                     <div className="flex flex-wrap gap-2 mt-2">
                       <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-md">
                         ID {client.id}
