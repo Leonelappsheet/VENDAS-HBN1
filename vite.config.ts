@@ -5,66 +5,64 @@ import {defineConfig, loadEnv} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 
+import { cloudflare } from "@cloudflare/vite-plugin";
+
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   const isGasBuild = process.env.BUILD_GAS === 'true';
 
   return {
-    plugins: [
-      react(), 
-      tailwindcss(),
-      ...(isGasBuild ? [
-        viteSingleFile(),
-        {
-          name: 'pwa-mock',
-          resolveId(id) {
-            if (id === 'virtual:pwa-register') {
-              return id;
-            }
-          },
-          load(id) {
-            if (id === 'virtual:pwa-register') {
-              return 'export function registerSW() { return () => {}; }';
-            }
+    plugins: [react(), tailwindcss(), ...(isGasBuild ? [
+      viteSingleFile(),
+      {
+        name: 'pwa-mock',
+        resolveId(id) {
+          if (id === 'virtual:pwa-register') {
+            return id;
+          }
+        },
+        load(id) {
+          if (id === 'virtual:pwa-register') {
+            return 'export function registerSW() { return () => {}; }';
           }
         }
-      ] : [
-        VitePWA({
-          registerType: 'autoUpdate',
-          workbox: {
-            maximumFileSizeToCacheInBytes: 5000000,
-          },
-          manifest: {
-            name: 'VENDAS HBN1',
-            short_name: 'VENDAS HBN1',
-            description: 'Sistema de gestão de vendas HBN1',
-            theme_color: '#FF6B00',
-            background_color: '#ffffff',
-            display: 'standalone',
-            icons: [
-              {
-                src: '/logo.svg',
-                sizes: '192x192',
-                type: 'image/svg+xml',
-                purpose: 'any'
-              },
-              {
-                src: '/logo.svg',
-                sizes: '512x512',
-                type: 'image/svg+xml',
-                purpose: 'any'
-              },
-              {
-                src: '/logo.svg',
-                sizes: '192x192',
-                type: 'image/svg+xml',
-                purpose: 'maskable'
-              }
-            ]
-          }
-        })
-      ])
-    ],
+      }
+    ] : [
+      VitePWA({
+        registerType: 'autoUpdate',
+        workbox: {
+          maximumFileSizeToCacheInBytes: 5000000,
+        },
+        manifest: {
+          name: 'VENDAS HBN1',
+          short_name: 'VENDAS HBN1',
+          description: 'Sistema de gestão de vendas HBN1',
+          theme_color: '#FF6B00',
+          background_color: '#ffffff',
+          display: 'standalone',
+          icons: [
+            {
+              src: '/logo.svg',
+              sizes: '192x192',
+              type: 'image/svg+xml',
+              purpose: 'any'
+            },
+            {
+              src: '/logo.svg',
+              sizes: '512x512',
+              type: 'image/svg+xml',
+              purpose: 'any'
+            },
+            {
+              src: '/logo.svg',
+              sizes: '192x192',
+              type: 'image/svg+xml',
+              purpose: 'maskable'
+            }
+          ]
+        }
+      })
+    ]), cloudflare()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },
