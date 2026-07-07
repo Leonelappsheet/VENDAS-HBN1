@@ -533,10 +533,11 @@ export default function ProductCatalog() {
     const tabCounts = { produtos: 0, ofertas: 0, lancamentos: 0 };
     
     products.forEach(p => {
+      const isNormal = p.type === 'normal';
       const isOffer = p.type === 'offer';
       const isNew = p.type === 'new';
 
-      tabCounts.produtos++;
+      if (isNormal) tabCounts.produtos++;
       if (isOffer) tabCounts.ofertas++;
       if (isNew) tabCounts.lancamentos++;
     });
@@ -547,6 +548,7 @@ export default function ProductCatalog() {
   const filteredProducts = useMemo(() => {
     let result = products.filter(p => {
       // Tab Filter
+      if (activeTab === 'produtos' && p.type !== 'normal') return false;
       if (activeTab === 'ofertas' && p.type !== 'offer') return false;
       if (activeTab === 'lancamentos' && p.type !== 'new') return false;
       
