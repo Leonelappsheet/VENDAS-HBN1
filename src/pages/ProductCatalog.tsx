@@ -93,6 +93,37 @@ const getManufacturerLogo = (name: string): string | null => {
   return null;
 };
 
+const getProductImageUrl = (photoUrl: string | undefined | null): string => {
+  if (!photoUrl) return `https://placehold.co/400x400/FFFFFF/CCCCCC?text=Sem+Foto`;
+  let url = String(photoUrl).trim();
+  if (!url || url === "" || url === "-" || url.toLowerCase() === "sem foto" || url.toLowerCase() === "sem_foto") {
+    return `https://placehold.co/400x400/FFFFFF/CCCCCC?text=Sem+Foto`;
+  }
+
+  // Fix double schema prefixes (e.g., https://https://)
+  url = url.replace(/^(https?:\/\/)+https?:\/\//i, 'https://');
+  url = url.replace(/^https?:\/\/https?:\/\//i, 'https://');
+
+  // Google Drive conversion (very common for shared assets)
+  const driveMatch = url.match(/(?:drive\.google\.com\/file\/d\/|drive\.google\.com\/open\?id=|docs\.google\.com\/uc\?(?:export=download&)?id=)([a-zA-Z0-9_-]+)/);
+  if (driveMatch && driveMatch[1]) {
+    return `https://lh3.googleusercontent.com/d/${driveMatch[1]}`;
+  }
+
+  // Dropbox conversion
+  if (url.includes('dropbox.com') && !url.includes('dl.dropboxusercontent.com')) {
+    url = url.replace('www.dropbox.com', 'dl.dropboxusercontent.com');
+    url = url.replace('?dl=0', '?dl=1');
+  }
+
+  // Mixed content check: if on HTTPS but image is HTTP, proxy through weserv.nl
+  if (url.startsWith('http://')) {
+    return `https://images.weserv.nl/?url=${encodeURIComponent(url)}&output=jpg&q=90&bg=white&fit=contain&w=500&h=500`;
+  }
+
+  return url;
+};
+
 interface ProductCardProps {
   product: Product;
   cartQuantity: number;
@@ -161,15 +192,15 @@ const ProductCard = React.memo<ProductCardProps>(({
       {/* Product Image */}
       <div className="aspect-[4/4] w-full bg-white p-1.5 sm:p-4 relative cursor-zoom-in flex-none overflow-hidden flex items-center justify-center" onClick={() => onSetZoomImage(product)}>
         <img 
-          src={product.photo || `https://placehold.co/400x400/FFFFFF/CCCCCC?text=Sem+Foto`} 
+          src={getProductImageUrl(product.photo)} 
           alt={product.description} 
-          crossOrigin="anonymous"
           loading="lazy"
           className="max-w-full max-h-full w-auto h-auto object-contain transition-all duration-500 group-hover:scale-110" 
           onError={(e) => {
             const target = e.target as HTMLImageElement;
-            if (product.photo && !target.src.includes('weserv.nl')) {
-              target.src = `https://images.weserv.nl/?url=${encodeURIComponent(product.photo)}&output=jpg&q=90&bg=white&fit=contain&w=500&h=500`;
+            const originalUrl = product.photo || "";
+            if (originalUrl && !target.src.includes('weserv.nl')) {
+              target.src = `https://images.weserv.nl/?url=${encodeURIComponent(originalUrl)}&output=jpg&q=90&bg=white&fit=contain&w=500&h=500`;
             } else if (!target.src.includes('placehold.co')) {
               target.src = 'https://placehold.co/400x400/FFFFFF/DDDDDD?text=Foto+Indisponivel';
             }
@@ -2263,7 +2294,7 @@ export default function ProductCatalog() {
                       </div>
                       <div className="flex -space-x-2 overflow-hidden">
                         {pCart.items.slice(0, 5).map((item, idx) => (
-                          <img key={idx} src={item.photo} className="inline-block h-8 w-8 rounded-full border-2 border-white dark:border-gray-800 bg-white" title={item.description} />
+                          <img key={idx} src={getProductImageUrl(item.photo)} className="inline-block h-8 w-8 rounded-full border-2 border-white dark:border-gray-800 bg-white" title={item.description} />
                         ))}
                         {pCart.items.length > 5 && (
                           <div className="h-8 w-8 rounded-full bg-gray-200 dark:bg-gray-700 border-2 border-white dark:border-gray-800 flex items-center justify-center text-[10px] font-bold">
@@ -2316,7 +2347,7 @@ export default function ProductCatalog() {
                         inCart ? "border-orange-500 bg-orange-50/20" : "border-transparent hover:border-gray-200"
                       )}>
                         <div className="w-20 h-20 bg-white rounded-xl overflow-hidden p-2 flex-none relative">
-                          <img src={p.photo || `https://placehold.co/100x100?text=IMG`} className="w-full h-full object-contain" />
+                          <img src={getProductImageUrl(p.photo)} className="w-full h-full object-contain" />
                           {wasSold && (
                             <div className="absolute inset-0 bg-green-500/20 flex items-center justify-center backdrop-blur-[1px]">
                               <span className="bg-green-600 text-white text-[8px] font-black px-1.5 py-0.5 rounded shadow-lg uppercase leading-none">JÁ VENDIDO</span>
@@ -2452,7 +2483,7 @@ export default function ProductCatalog() {
                     <div className="space-y-3">
                       {cart.map((item, idx) => (
                         <div key={`${item.id}-${idx}`} className="bg-white dark:bg-[#1E1E1E] p-3 rounded-2xl shadow-sm flex gap-3">
-                          <img src={item.photo || `https://placehold.co/100x100?text=IMG`} className="w-16 h-16 object-contain rounded-xl" />
+                          <img src={getProductImageUrl(item.photo)} className="w-16 h-16 object-contain rounded-xl" />
                           <div className="flex-1">
                             <h4 className="text-xs font-bold text-gray-900 dark:text-white truncate">{item.description}</h4>
                             <div className="flex items-center justify-between mt-2">
@@ -2579,7 +2610,7 @@ export default function ProductCatalog() {
               <div className="p-6 space-y-6 overflow-y-auto max-h-[70vh]">
                 <div className="flex gap-4">
                   <div className="w-24 h-24 bg-gray-100 rounded-2xl flex items-center justify-center overflow-hidden border-2 border-gray-200">
-                    <img src={updatingImageProduct.photo || 'https://placehold.co/200x200?text=Sem+Foto'} className="max-w-full max-h-full object-contain" />
+                    <img src={getProductImageUrl(updatingImageProduct.photo)} className="max-w-full max-h-full object-contain" />
                   </div>
                   <div className="flex-1 flex flex-col justify-center">
                     <p className="text-xs text-gray-500 font-bold">Foto Atual</p>
@@ -2674,7 +2705,7 @@ export default function ProductCatalog() {
               <div className="flex-1 overflow-y-auto p-4 space-y-3">
                 {quickOrderProducts.map((p, i) => (
                   <div key={i} className="flex items-center gap-3 bg-gray-50 p-3 rounded-2xl">
-                    <img src={p.photo} className="w-12 h-12 object-contain" />
+                    <img src={getProductImageUrl(p.photo)} className="w-12 h-12 object-contain" />
                     <div className="flex-1"><p className="text-xs font-bold truncate">{p.description}</p><p className="text-[10px] text-orange-600 font-bold">{formatCurrency(p.finalPrice)}</p></div>
                     <button onClick={() => addToCart(p)} className="bg-orange-600 text-white p-2 rounded-lg"><Plus size={16} /></button>
                   </div>
@@ -2730,14 +2761,14 @@ export default function ProductCatalog() {
                       </div>
 
                       <img 
-                        src={product.photo || `https://placehold.co/400x400/FFFFFF/CCCCCC?text=Sem+Foto`} 
+                        src={getProductImageUrl(product.photo)} 
                         alt={product.description} 
-                        crossOrigin="anonymous"
                         className="max-w-full max-h-full object-contain transition-all duration-300 group-hover:scale-105"
                         onError={(e) => {
                           const target = e.target as HTMLImageElement;
-                          if (product.photo && !target.src.includes('weserv.nl')) {
-                            target.src = `https://images.weserv.nl/?url=${encodeURIComponent(product.photo)}&output=jpg&q=90&bg=white&fit=contain&w=500&h=500`;
+                          const originalUrl = product.photo || "";
+                          if (originalUrl && !target.src.includes('weserv.nl')) {
+                            target.src = `https://images.weserv.nl/?url=${encodeURIComponent(originalUrl)}&output=jpg&q=90&bg=white&fit=contain&w=500&h=500`;
                           } else if (!target.src.includes('placehold.co')) {
                             target.src = 'https://placehold.co/400x400/FFFFFF/DDDDDD?text=Foto+Indisponivel';
                           }
@@ -2746,7 +2777,7 @@ export default function ProductCatalog() {
 
                       {/* Zoom click */}
                       <button 
-                        onClick={() => setSelectedImage(product.photo || `https://placehold.co/400x400/FFFFFF/CCCCCC?text=Sem+Foto`)}
+                        onClick={() => setSelectedImage(getProductImageUrl(product.photo))}
                         className="absolute bottom-3 right-3 p-2 bg-white/80 dark:bg-[#1E1E1E]/80 backdrop-blur-sm rounded-full text-gray-700 dark:text-gray-300 shadow hover:bg-white transition-colors cursor-pointer"
                         title="Ver imagem ampliada"
                       >

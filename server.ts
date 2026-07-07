@@ -1111,75 +1111,113 @@ apiRouter.post("/catalog/update", async (req, res) => {
             }
           };
 
-          updateVal(idIdx, newId);
-          updateVal(eanIdx, newEan);
-          updateVal(descIdx, newDesc);
-          updateVal(stockIdx, newStock);
-          updateVal(priceIdx, formatBrazilian(newPrice));
-          updateVal(discIdx, formatBrazilian(newDiscount, true));
-          updateVal(finalIdx, formatBrazilian(newFinal));
+          const isOfertasSheet = entry.sheetName === "Ofertas";
+
+          let finalId = newId;
+          let finalEan = newEan;
+          let finalDesc = newDesc;
+          let finalStock = newStock;
+          let finalPriceVal = newPrice;
+          let finalDiscountVal = newDiscount;
+          let finalPriceFinalVal = newFinal;
+
+          if (isOfertasSheet) {
+            let isStockNotFound = false;
+            let isPriceNotFound = false;
+            let isDiscountNotFound = false;
+            let isFinalNotFound = false;
+
+            if (Array.isArray(item)) {
+              if (hasSourceHeaders) {
+                const sCol = mappedIndices.stock !== -1 ? mappedIndices.stock : mapping.stock;
+                const sVal = sCol !== -1 && sCol < item.length ? String(item[sCol] || "").trim() : "";
+                isStockNotFound = sVal === "";
+                
+                const pCol = mappedIndices.price !== -1 ? mappedIndices.price : mapping.price;
+                const pVal = pCol !== -1 && pCol < item.length ? String(item[pCol] || "").trim() : "";
+                isPriceNotFound = pVal === "";
+
+                const dCol = mappedIndices.discount !== -1 ? mappedIndices.discount : mapping.discount;
+                const dVal = dCol !== -1 && dCol < item.length ? String(item[dCol] || "").trim() : "";
+                isDiscountNotFound = dVal === "";
+
+                const fCol = mappedIndices.final !== -1 ? mappedIndices.final : mapping.final;
+                const fVal = fCol !== -1 && fCol < item.length ? String(item[fCol] || "").trim() : "";
+                isFinalNotFound = fVal === "";
+              } else {
+                const sVal = mapping.stock !== -1 && mapping.stock < item.length ? String(item[mapping.stock] || "").trim() : "";
+                isStockNotFound = sVal === "";
+                
+                const pVal = mapping.price !== -1 && mapping.price < item.length ? String(item[mapping.price] || "").trim() : "";
+                isPriceNotFound = pVal === "";
+
+                const dVal = mapping.discount !== -1 && mapping.discount < item.length ? String(item[mapping.discount] || "").trim() : "";
+                isDiscountNotFound = dVal === "";
+
+                const fVal = mapping.final !== -1 && mapping.final < item.length ? String(item[mapping.final] || "").trim() : "";
+                isFinalNotFound = fVal === "";
+              }
+            } else if (item && typeof item === 'object') {
+              isStockNotFound = !item[mapping.stock] || String(item[mapping.stock]).trim() === "";
+              isPriceNotFound = !item[mapping.price] || String(item[mapping.price]).trim() === "";
+              isDiscountNotFound = !item[mapping.discount] || String(item[mapping.discount]).trim() === "";
+              isFinalNotFound = !item[mapping.final] || String(item[mapping.final]).trim() === "";
+            }
+
+            if (isStockNotFound || !newStock || newStock === "") {
+              finalStock = "1";
+            }
+            if (isPriceNotFound || !newPrice || parseFloat(String(newPrice)) <= 0 || isNaN(parseFloat(String(newPrice)))) {
+              finalPriceVal = 1;
+            }
+            if (isDiscountNotFound || !newDiscount || parseFloat(String(newDiscount)) <= 0 || isNaN(parseFloat(String(newDiscount)))) {
+              finalDiscountVal = 1;
+            }
+            if (isFinalNotFound || !newFinal || parseFloat(String(newFinal)) <= 0 || isNaN(parseFloat(String(newFinal)))) {
+              finalPriceFinalVal = 1;
+            }
+          }
+
+          updateVal(idIdx, finalId);
+          updateVal(eanIdx, finalEan);
+          updateVal(descIdx, finalDesc);
+          updateVal(stockIdx, finalStock);
+          updateVal(priceIdx, formatBrazilian(finalPriceVal));
+          updateVal(discIdx, formatBrazilian(finalDiscountVal, true));
+          updateVal(finalIdx, formatBrazilian(finalPriceFinalVal));
           updateVal(validIdx, newValid);
         });
         updatedCount++;
         updatedProductsLog.push(`${newDesc || "Sem Descrição"} (ID: ${newId || '-'}) → Est: ${newStock || '0'} | Preço: R$ ${formatBrazilian(newPrice)} | Desc: ${formatBrazilian(newDiscount, true)} | Final: R$ ${formatBrazilian(newFinal)}`);
 
-        // Check if we need to promote this updated product to Ofertas sheet
-        if (newDiscount > 0) {
-          const hasOfferEntry = allMatchingEntries.some(e => e.sheetName === "Ofertas");
-          if (hasOfferEntry) {
+        // Check if we need to update this product in the Ofertas sheet (only if it already exists there)
+        const hasOfferEntry = allMatchingEntries.some(e => e.sheetName === "Ofertas");
+        if (hasOfferEntry) {
+          const dVal = typeof newDiscount === 'number' ? newDiscount : parseFloat(cleanNumericString(newDiscount));
+          
+          let isDiscountNotFound = false;
+          if (Array.isArray(item)) {
+            if (hasSourceHeaders) {
+              const dCol = mappedIndices.discount !== -1 ? mappedIndices.discount : mapping.discount;
+              const dValStr = dCol !== -1 && dCol < item.length ? String(item[dCol] || "").trim() : "";
+              isDiscountNotFound = dValStr === "";
+            } else {
+              const dValStr = mapping.discount !== -1 && mapping.discount < item.length ? String(item[mapping.discount] || "").trim() : "";
+              isDiscountNotFound = dValStr === "";
+            }
+          } else if (item && typeof item === 'object') {
+            isDiscountNotFound = !item[mapping.discount] || String(item[mapping.discount]).trim() === "";
+          }
+
+          const isDiscNotFound = isDiscountNotFound || !newDiscount || isNaN(dVal) || dVal <= 0;
+
+          if (newDiscount > 0 || isDiscNotFound) {
             updatedOffersCount++;
           } else {
-            const offersHeaders = sheetData["Ofertas"]?.headers || sheetData["Produtos"]?.headers || [];
-            const offersRowLength = Math.max(offersHeaders.length, 8);
-            const newOffersRow = new Array(offersRowLength).fill("");
-            newOffersRow[idIdx] = newId;
-            newOffersRow[eanIdx] = newEan;
-            newOffersRow[descIdx] = newDesc;
-            newOffersRow[stockIdx] = newStock;
-            newOffersRow[priceIdx] = formatBrazilian(newPrice);
-            newOffersRow[discIdx] = formatBrazilian(newDiscount, true);
-            newOffersRow[finalIdx] = formatBrazilian(newFinal);
-            newOffersRow[validIdx] = newValid;
-
-            const industryName = industria.split(' ')[0].toUpperCase();
-            const offFabColIdx = offersHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("fabricante"));
-            if (offFabColIdx !== -1) newOffersRow[offFabColIdx] = industryName;
-
-            // Copy Category and Photo from Products row if available
-            const prodRow = allMatchingEntries.find(e => e.sheetName === "Produtos")?.row;
-            if (prodRow) {
-              const prodHeaders = sheetData["Produtos"]?.headers || [];
-              const catColIdx = prodHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("categoria"));
-              const photoColIdx = prodHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("foto"));
-              
-              const offCatColIdx = offersHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("categoria"));
-              const offPhotoColIdx = offersHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("foto"));
-
-              if (catColIdx !== -1 && offCatColIdx !== -1) newOffersRow[offCatColIdx] = prodRow[catColIdx] || "";
-              if (photoColIdx !== -1 && offPhotoColIdx !== -1) newOffersRow[offPhotoColIdx] = prodRow[photoColIdx] || "";
-            }
-
-            if (!sheetData["Ofertas"]) {
-              sheetData["Ofertas"] = { rows: [["ID", "EAN", "Descrição", "Estoque", "Preço Venda", "Desconto", "Preço Final", "Validade Desconto", "Categoria", "Fabricante", "Foto"]], headers: ["ID", "EAN", "Descrição", "Estoque", "Preço Venda", "Desconto", "Preço Final", "Validade Desconto", "Categoria", "Fabricante", "Foto"] };
-            }
-            sheetData["Ofertas"].rows.push(newOffersRow);
-            promotedOffersCount++;
-            
-            // Register this new entry to existingProductsMap so we don't duplicate if processed again
-            const entry = { row: newOffersRow, sheetName: "Ofertas" };
-            if (newId) {
-              if (!existingProductsMap.has(newId)) existingProductsMap.set(newId, []);
-              existingProductsMap.get(newId)!.push(entry);
-            }
-            if (newEan) {
-              if (!existingProductsMap.has(newEan)) existingProductsMap.set(newEan, []);
-              existingProductsMap.get(newEan)!.push(entry);
-            }
+            // If discount is explicitly 0 or less, mark for removal from Ofertas sheet
+            if (newId) idsToRemoveFromOfertas.add(newId);
+            if (newEan) eansToRemoveFromOfertas.add(newEan);
           }
-        } else {
-          // If discount is 0 or less, mark for removal from Ofertas sheet
-          if (newId) idsToRemoveFromOfertas.add(newId);
-          if (newEan) eansToRemoveFromOfertas.add(newEan);
         }
       } else {
         const industryName = industria.split(' ')[0].toUpperCase();
@@ -1213,42 +1251,60 @@ apiRouter.post("/catalog/update", async (req, res) => {
           if (!existingProductsMap.has(newEan)) existingProductsMap.set(newEan, []);
           existingProductsMap.get(newEan)!.push(entry);
         }
-
-        // Add to Ofertas sheet as well if newDiscount > 0
-        if (newDiscount > 0) {
-          if (!sheetData["Ofertas"]) {
-            sheetData["Ofertas"] = { rows: [["ID", "EAN", "Descrição", "Estoque", "Preço Venda", "Desconto", "Preço Final", "Validade Desconto", "Categoria", "Fabricante", "Foto"]], headers: ["ID", "EAN", "Descrição", "Estoque", "Preço Venda", "Desconto", "Preço Final", "Validade Desconto", "Categoria", "Fabricante", "Foto"] };
-          }
-          const offersHeaders = sheetData["Ofertas"]?.headers || headers || [];
-          const offersRowLength = Math.max(offersHeaders.length, 8);
-          const newOffersRow = new Array(offersRowLength).fill("");
-          newOffersRow[idIdx] = newId;
-          newOffersRow[eanIdx] = newEan;
-          newOffersRow[descIdx] = newDesc;
-          newOffersRow[stockIdx] = newStock;
-          newOffersRow[priceIdx] = formatBrazilian(newPrice);
-          newOffersRow[discIdx] = formatBrazilian(newDiscount, true);
-          newOffersRow[finalIdx] = formatBrazilian(newFinal);
-          newOffersRow[validIdx] = newValid;
-          
-          const offFabColIdx = offersHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("fabricante"));
-          if (offFabColIdx !== -1) newOffersRow[offFabColIdx] = industryName;
-          
-          sheetData["Ofertas"].rows.push(newOffersRow);
-          promotedOffersCount++;
-          
-          const offEntry = { row: newOffersRow, sheetName: "Ofertas" };
-          if (newId) {
-            if (!existingProductsMap.has(newId)) existingProductsMap.set(newId, []);
-            existingProductsMap.get(newId)!.push(offEntry);
-          }
-          if (newEan) {
-            if (!existingProductsMap.has(newEan)) existingProductsMap.set(newEan, []);
-            existingProductsMap.get(newEan)!.push(offEntry);
-          }
-        }
       }
     });
+
+    // Post-processing for Ofertas sheet to default unmatched target industry products to "1"
+    let defaultedUnmatchedOffersCount = 0;
+    if (sheetData["Ofertas"]) {
+      const offersHeaders = sheetData["Ofertas"].headers || [];
+      const offersRows = sheetData["Ofertas"].rows;
+      const offersFabColIdx = offersHeaders.findIndex((h: any) => String(h || "").toLowerCase().includes("fabricante"));
+      
+      offersRows.slice(1).forEach(row => {
+        let belongsToIndustry = false;
+        if (offersFabColIdx !== -1 && row[offersFabColIdx]) {
+          const rowFab = String(row[offersFabColIdx] || "").trim().toUpperCase();
+          belongsToIndustry = rowFab === targetIndustry || rowFab.startsWith(targetIndustry) || targetIndustry.startsWith(rowFab);
+        }
+        
+        if (!belongsToIndustry) {
+          const id = String(row[idIdx] || "").trim();
+          const rawEan = String(row[eanIdx] || "").trim().replace(/^'/, '');
+          const ean = normalizeEAN(rawEan);
+          if ((id && targetIndustryIdsAndEans.has(id)) || (ean && targetIndustryIdsAndEans.has(ean))) {
+            belongsToIndustry = true;
+          }
+        }
+        
+        if (belongsToIndustry) {
+          while (row.length <= Math.max(stockIdx, priceIdx, discIdx, finalIdx)) {
+            row.push("");
+          }
+          
+          let wasDefaulted = false;
+          if (!row[stockIdx] || String(row[stockIdx]).trim() === "") {
+            row[stockIdx] = "1";
+            wasDefaulted = true;
+          }
+          if (!row[priceIdx] || String(row[priceIdx]).trim() === "") {
+            row[priceIdx] = formatBrazilian(1);
+            wasDefaulted = true;
+          }
+          if (!row[discIdx] || String(row[discIdx]).trim() === "") {
+            row[discIdx] = formatBrazilian(1, true);
+            wasDefaulted = true;
+          }
+          if (!row[finalIdx] || String(row[finalIdx]).trim() === "") {
+            row[finalIdx] = formatBrazilian(1);
+            wasDefaulted = true;
+          }
+          if (wasDefaulted) {
+            defaultedUnmatchedOffersCount++;
+          }
+        }
+      });
+    }
 
     let removedOffersCount = 0;
     if (sheetData["Ofertas"]) {
@@ -1275,6 +1331,9 @@ apiRouter.post("/catalog/update", async (req, res) => {
     log.push(`Resumo: ${newCount} novos produtos foram adicionados.`);
     log.push(`Resumo de Ofertas: ${promotedOffersCount} novos produtos promovidos à aba Ofertas.`);
     log.push(`Resumo de Ofertas: ${updatedOffersCount} ofertas existentes atualizadas.`);
+    if (defaultedUnmatchedOffersCount > 0) {
+      log.push(`Resumo de Ofertas: ${defaultedUnmatchedOffersCount} ofertas que não constavam na planilha de atualização tiveram seus valores ausentes preenchidos com 1.`);
+    }
     if (removedOffersCount > 0) {
       log.push(`Resumo de Ofertas: ${removedOffersCount} produtos removidos da aba Ofertas (desconto zerado).`);
     }
