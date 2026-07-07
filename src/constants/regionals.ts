@@ -21,7 +21,15 @@ export const getSpreadsheetId = (regional?: string): string => {
   try {
     const customId = localStorage.getItem(`CUSTOM_SPREADSHEET_ID_${normalized}`);
     if (customId && customId.trim()) {
-      return customId.trim();
+      const trimmed = customId.trim();
+      // Auto-cleanup old default spreadsheet IDs if they were stored in localStorage
+      if (trimmed === '1I79E8X9b8O-g1wIc5fsKuO2DW9GCU24uZFkpTEQAcEk' || 
+          trimmed === '1z2a_wzBrVPUEk8RrTEsIV9MsV9XBZQd9eZM6AwMwVyE') {
+        console.log(`[Spreadsheet ID Migration] Cleared old default spreadsheet ID for ${normalized} from localStorage: ${trimmed}`);
+        localStorage.removeItem(`CUSTOM_SPREADSHEET_ID_${normalized}`);
+      } else {
+        return trimmed;
+      }
     }
   } catch (e) {
     console.warn('LocalStorage not available for custom spreadsheet ID', e);

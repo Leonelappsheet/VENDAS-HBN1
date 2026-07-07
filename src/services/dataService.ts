@@ -140,6 +140,7 @@ function parseCSV(csvText: string): any[] {
 }
 
 let currentRegional = 'TIMON-MA';
+let lastSpreadsheetError: string | null = null;
 
 async function fetchDirectlyFromGoogleSheets(sheetName: string, customSpreadsheetId?: string): Promise<any[]> {
   const spreadsheetId = customSpreadsheetId || getSpreadsheetId(currentRegional);
@@ -233,9 +234,11 @@ async function fetchDirectlyFromGoogleSheets(sheetName: string, customSpreadshee
     });
     
     console.log(`[Direct Fetch] Successfully loaded ${rows.length} rows directly from Google Sheets for sheet "${sheetName}"`);
+    lastSpreadsheetError = null; // Clear error on successful fetch
     return rows;
   } catch (err: any) {
     console.error(`[Direct Fetch Error] Failed direct fetch for sheet "${sheetName}":`, err.message);
+    lastSpreadsheetError = `Falha ao carregar a aba "${sheetName}" do Google Sheets. Isso geralmente acontece porque a planilha é PRIVADA e não está compartilhada publicamente para Leitura, ou por bloqueio de CORS. \n\nPara corrigir, compartilhe a planilha "${spreadsheetId}" como "Qualquer pessoa com o link pode ler" no Google Drive, ou configure a "URL do Google Apps Script" no Painel Admin.`;
     throw err;
   }
 }
@@ -272,6 +275,7 @@ async function safeFetch(endpoint: string, sheetName: string, options: any = {})
         data: {
           ok: false,
           isFallback: true,
+          spreadsheetError: lastSpreadsheetError || undefined,
           spreadsheetInfo: {
             sheets: ['Produtos', 'Ofertas', 'Lancamentos', 'Clientes', 'Pedidos', 'Carrinhos', 'usuarios', 'Metas']
           }
@@ -312,7 +316,13 @@ export const dataService = {
       return {
         ok: false,
         spreadsheetId: getSpreadsheetId(currentRegional),
-        spreadsheetError: 'Não foi possível conectar ao servidor de API backend. Verifique a URL do Netlify ou use o Google Apps Script.'
+        spreadsheetError: 'Não foi possível conectar ao servidor de API backend. Como este app está rodando de forma estática no navegador, ele precisa ler os dados diretamente do Google Sheets.',
+        serviceAccountEmail: '',
+        instructions: [
+          'Compartilhe sua planilha do Google Sheets publicamente para Leitura: No Google Sheets, clique em "Compartilhar" (canto superior direito) -> Mude "Acesso restrito" para "Qualquer pessoa com o link" -> Mantenha o papel como "Leitor". Isso é necessário para o navegador conseguir ler a planilha sem restrições de CORS.',
+          'Caso não queira tornar a planilha pública, configure o Google Apps Script: Vá no Painel Administrativo do app (ícone de engrenagem no topo direito ou acesse /admin), copie o "Código para colar no Apps Script", crie um script no seu Google Drive, implante como App Web ("Qualquer pessoa") e cole o link longo gerado no campo "URL do Google Apps Script" do app.',
+          'Verifique se a aba "Clientes" existe exatamente com esse nome e se possui as colunas ID, Nome, Fantasia, CNPJ, Vendedor, etc.'
+        ]
       };
     }
   },
