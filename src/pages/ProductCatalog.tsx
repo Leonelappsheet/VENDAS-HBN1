@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dataService } from '../services/dataService';
@@ -175,16 +175,11 @@ const ProductCard = React.memo<ProductCardProps>(({
           {product.type === 'new' && <span className="bg-purple-600 text-white text-[7px] sm:text-[8px] font-black px-1.5 py-0.5 sm:px-2 sm:py-1 rounded-full uppercase flex items-center gap-0.5 sm:gap-1 shadow-sm"><Sparkles size={8} className="sm:size-2.5" /> Novo</span>}
           {profileRole !== 'promotor' && isSold && <span className="bg-green-600 text-white text-[7px] sm:text-[8px] font-black px-1.5 py-0.5 sm:px-2 sm:py-1 rounded-full shadow-sm uppercase">Já Comprado</span>}
         </div>
-        {profileRole !== 'promotor' && finalDiscount > 0 && (
+        {profileRole !== 'promotor' && product.discountExpiryDate && (
           <div className="flex flex-col items-end gap-0.5 sm:gap-1">
-            <div className="bg-[#EF4444] text-white text-[8px] sm:text-[10px] md:text-xs font-black px-1.5 py-0.5 sm:px-3 sm:py-1.5 rounded-full shadow-lg flex items-center justify-center">
-              -{finalDiscount.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%
+            <div className="bg-white/90 backdrop-blur-sm text-orange-600 text-[6px] sm:text-[8px] font-black px-1 py-0.5 rounded-full border border-orange-100 shadow-sm flex items-center gap-0.5">
+              <History size={6} className="sm:size-2" /> Expira: {new Date(product.discountExpiryDate + 'T12:00:00').toLocaleDateString('pt-BR')}
             </div>
-            {product.discountExpiryDate && (
-              <div className="bg-white/90 backdrop-blur-sm text-orange-600 text-[6px] sm:text-[8px] font-black px-1 py-0.5 rounded-full border border-orange-100 shadow-sm flex items-center gap-0.5">
-                <History size={6} className="sm:size-2" /> Expira: {new Date(product.discountExpiryDate + 'T12:00:00').toLocaleDateString('pt-BR')}
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -209,51 +204,51 @@ const ProductCard = React.memo<ProductCardProps>(({
       </div>
 
       {/* Product Info Section */}
-      <div className="px-1.5 py-2 sm:px-4 sm:py-3 flex-1 flex flex-col gap-1 sm:gap-1.5">
+      <div className="px-1.5 py-2 sm:px-2.5 sm:py-2.5 flex-1 flex flex-col gap-1 sm:gap-1.5">
         {/* Header: Category and Utils */}
         <div className="flex justify-between items-center mb-0.5 sm:mb-1">
           {profileRole !== 'promotor' ? (
-            <span className="text-[7px] sm:text-[9px] font-black text-[#F472B6] uppercase tracking-wider">{product.category}</span>
+            <span className="text-[7px] sm:text-[8px] md:text-[9px] font-black text-[#F472B6] uppercase tracking-wider">{product.category}</span>
           ) : <div />}
           {profileRole !== 'promotor' && (
-            <div className="flex gap-1 sm:gap-2 animate-none">
+            <div className="flex gap-1 sm:gap-1.5 animate-none">
               <motion.button 
                 whileHover={{ scale: 1.2, color: "#EA580C" }} 
                 whileTap={{ scale: 0.9 }}
                 onClick={(e) => { e.stopPropagation(); onToggleFavorite(product); }} 
-                className={cn("p-0.5 sm:p-1 transition-all", isFavorite ? "text-orange-600" : "text-gray-300")}
+                className={cn("p-0.5 transition-all", isFavorite ? "text-orange-600" : "text-gray-300")}
               >
-                <Star size={12} className="sm:size-4" fill={isFavorite ? "currentColor" : "none"} />
+                <Star size={10} className="sm:size-[13px]" fill={isFavorite ? "currentColor" : "none"} />
               </motion.button>
               <motion.button 
                 whileHover={{ scale: 1.2, color: "#4B5563" }} 
                 whileTap={{ scale: 0.9 }}
                 onClick={(e) => { e.stopPropagation(); onSetUpdatingImageProduct(product); }}
-                className="text-gray-300 hover:text-gray-600 transition-colors p-0.5 sm:p-1"
+                className="text-gray-300 hover:text-gray-600 transition-colors p-0.5"
               >
-                <Camera size={12} className="sm:size-4" />
+                <Camera size={10} className="sm:size-[13px]" />
               </motion.button>
             </div>
           )}
         </div>
 
         {/* Title */}
-        <h3 className="text-[10px] sm:text-[13px] font-bold text-gray-900 dark:text-white line-clamp-2 leading-tight min-h-[24px] sm:min-h-[32px] mb-0.5">
+        <h3 className="text-[10px] sm:text-[11px] md:text-[12px] font-bold text-gray-900 dark:text-white line-clamp-2 leading-tight min-h-[24px] sm:min-h-[28px] md:min-h-[32px] mb-0.5">
           {product.description}
         </h3>
 
         {/* Manufacturer */}
-        <p className="text-[9px] sm:text-[11px] font-medium text-gray-400 dark:text-gray-500 mb-0.5 sm:mb-1 truncate">{product.manufacturer}</p>
+        <p className="text-[8px] sm:text-[9px] md:text-[11px] font-medium text-gray-400 dark:text-gray-500 mb-0.5 sm:mb-1 truncate">{product.manufacturer}</p>
 
         {/* Tags */}
-        <div className="flex flex-wrap gap-1 mb-1 sm:mb-2">
-          <div className="flex items-center gap-0.5 bg-[#EEF2FF] dark:bg-blue-900/20 text-[#4F46E5] dark:text-blue-400 text-[8px] sm:text-[10px] font-bold px-1 py-0.2 sm:px-2 sm:py-0.5 rounded border border-transparent shadow-sm">
-            <Key size={8} className="text-[#FBBF24] sm:size-2.5" fill="#FBBF24" />
+        <div className="flex flex-wrap gap-1 mb-1 sm:mb-1.5">
+          <div className="flex items-center gap-0.5 bg-[#EEF2FF] dark:bg-blue-900/20 text-[#4F46E5] dark:text-blue-400 text-[7px] sm:text-[8px] md:text-[9px] font-bold px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded border border-transparent shadow-sm">
+            <Key size={6} className="text-[#FBBF24] sm:size-2" fill="#FBBF24" />
             {product.id}
           </div>
           {product.ean && (
-            <div className="flex items-center gap-0.5 bg-[#FAF5FF] dark:bg-purple-900/20 text-[#9333EA] dark:text-purple-400 text-[8px] sm:text-[10px] font-bold px-1 py-0.2 sm:px-2 sm:py-0.5 rounded border border-transparent shadow-sm truncate max-w-[50px] sm:max-w-[80px]">
-              <span className="w-1.5 h-1.5 bg-[#9333EA] rounded-sm shrink-0 sm:w-2 sm:h-2" />
+            <div className="flex items-center gap-0.5 bg-[#FAF5FF] dark:bg-purple-900/20 text-[#9333EA] dark:text-purple-400 text-[7px] sm:text-[8px] md:text-[9px] font-bold px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded border border-transparent shadow-sm truncate max-w-[45px] sm:max-w-[65px] md:max-w-[80px]">
+              <span className="w-1 h-1 bg-[#9333EA] rounded-sm shrink-0 sm:w-1.5 sm:h-1.5" />
               <span className="truncate">{product.ean}</span>
             </div>
           )}
@@ -263,32 +258,39 @@ const ProductCard = React.memo<ProductCardProps>(({
         <div className="mt-auto space-y-0.5">
           <div className="flex flex-col">
             {profileRole !== 'promotor' && economy > 0 && (
-              <span className="text-[8px] sm:text-[10px] font-medium text-gray-400 dark:text-gray-500 line-through">
+              <span className="text-[7px] sm:text-[8px] md:text-[9px] font-medium text-gray-400 dark:text-gray-500 line-through">
                 De: {formatCurrency(product.salePrice)}
               </span>
             )}
-            <span className="text-xs sm:text-lg md:text-xl font-black text-[#FF6B00] whitespace-nowrap">
-              {formatCurrency(product.finalPrice)}
-            </span>
+            <div className="flex items-center justify-between gap-1">
+              <span className="text-[11px] sm:text-sm md:text-base lg:text-lg font-black text-[#FF6B00] whitespace-nowrap">
+                {formatCurrency(product.finalPrice)}
+              </span>
+              {profileRole !== 'promotor' && finalDiscount > 0 && (
+                <span className="bg-[#EF4444] text-white text-[7px] sm:text-[8px] md:text-[9.5px] font-black px-1 py-0.5 rounded-md shrink-0">
+                  -{finalDiscount.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%
+                </span>
+              )}
+            </div>
           </div>
           
           {/* Savings Badge */}
           {profileRole !== 'promotor' && economy > 0 && (
-            <div className="inline-flex items-center gap-0.5 bg-[#22C55E] text-white text-[7px] sm:text-[9px] font-black px-1 py-0.5 sm:px-2 sm:py-1 rounded-full shadow-sm mt-0.5 sm:mt-1">
-              <Star size={8} className="sm:size-2.5" fill="currentColor" />
+            <div className="inline-flex items-center gap-0.5 bg-[#22C55E] text-white text-[7px] sm:text-[8px] md:text-[9px] font-black px-1 py-0.5 sm:px-1.5 sm:py-0.5 rounded-full shadow-sm mt-0.5 sm:mt-1 max-w-full">
+              <Star size={6} className="sm:size-2 shrink-0" fill="currentColor" />
               <span className="truncate">POUPE {formatCurrency(economy)}</span>
             </div>
           )}
 
-          <div className="flex flex-col gap-0.5 mt-1 sm:mt-2">
-            <p className={cn("text-[8px] sm:text-[10px] font-bold", hasStock ? "text-gray-500 dark:text-gray-400" : "text-[#EF4444]")}>
+          <div className="flex flex-col gap-0.5 mt-1 sm:mt-1.5">
+            <p className={cn("text-[7px] sm:text-[8px] md:text-[9px] font-bold", hasStock ? "text-gray-500 dark:text-gray-400" : "text-[#EF4444]")}>
               {hasStock ? `Est. ${product.stock}` : 'Sem estoque'}
             </p>
             {profileRole === 'promotor' && (
               <div className="flex items-center gap-0.5">
-                <span className="text-[7px] sm:text-[9px] font-black text-gray-400 uppercase">Status:</span>
+                <span className="text-[6px] sm:text-[8px] font-black text-gray-400 uppercase">Status:</span>
                 <span className={cn(
-                  "text-[7px] sm:text-[9px] font-black px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded uppercase",
+                  "text-[6px] sm:text-[8px] font-black px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded uppercase",
                   product.type === 'offer' ? "bg-orange-100 text-orange-600" : product.type === 'new' ? "bg-purple-100 text-purple-600" : "bg-gray-100 text-gray-600"
                 )}>
                   {product.type === 'offer' ? 'Oferta' : product.type === 'new' ? 'Novo' : 'Normal'}
@@ -300,16 +302,16 @@ const ProductCard = React.memo<ProductCardProps>(({
       </div>
 
       {/* Footer Action */}
-      <div className="px-1.5 sm:px-4 mt-1 sm:mt-2">
+      <div className="px-1.5 sm:px-2.5 mt-1 sm:mt-2">
         {cartQuantity > 0 ? (
           <div className="flex items-center justify-between bg-gray-50 dark:bg-gray-800 rounded-xl p-0.5 sm:p-1 shadow-inner border border-gray-100 dark:border-gray-700">
             <motion.button 
               whileHover={{ scale: 1.1, backgroundColor: "#fee2e2" }} 
               whileTap={{ scale: 0.9 }} 
               onClick={() => onUpdateQuantity(product.id, -1)} 
-              className="w-6 h-6 sm:w-8 sm:h-8 md:w-10 md:h-10 flex items-center justify-center text-red-600 rounded-lg transition-colors"
+              className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 flex items-center justify-center text-red-600 rounded-lg transition-colors"
             >
-              <Minus size={10} className="sm:size-[14px]" />
+              <Minus size={8} className="sm:size-[10px] md:size-[12px]" />
             </motion.button>
             <input 
               type="text" 
@@ -324,15 +326,15 @@ const ProductCard = React.memo<ProductCardProps>(({
                   onSetQuantityDirectly(product.id, 0);
                 }
               }}
-              className="w-6 sm:w-10 text-center text-[10px] sm:text-xs md:text-sm font-black bg-transparent border-none focus:ring-0 text-gray-900 dark:text-white p-0"
+              className="w-5 sm:w-8 text-center text-[8px] sm:text-[10px] md:text-xs font-black bg-transparent border-none focus:ring-0 text-gray-900 dark:text-white p-0"
             />
             <motion.button 
               whileHover={{ scale: 1.1, backgroundColor: "#dcfce7" }} 
               whileTap={{ scale: 0.9 }} 
               onClick={() => onUpdateQuantity(product.id, 1)} 
-              className="w-6 h-6 sm:w-8 sm:h-8 md:w-10 md:h-10 flex items-center justify-center text-green-600 rounded-lg transition-colors"
+              className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 flex items-center justify-center text-green-600 rounded-lg transition-colors"
             >
-              <Plus size={10} className="sm:size-[14px]" />
+              <Plus size={8} className="sm:size-[10px] md:size-[12px]" />
             </motion.button>
           </div>
         ) : (
@@ -341,10 +343,10 @@ const ProductCard = React.memo<ProductCardProps>(({
             whileTap={{ scale: 0.95 }}
             disabled={!hasStock} 
             onClick={() => onAddToCart(product)} 
-            className="w-full h-8 sm:h-10 md:h-12 bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white rounded-[10px] sm:rounded-[14px] md:rounded-[16px] text-[9px] sm:text-xs md:text-sm font-black shadow-lg shadow-orange-500/20 disabled:opacity-50 flex items-center justify-center gap-1 sm:gap-2 transition-all px-1"
+            className="w-full h-7 sm:h-8 md:h-10 bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white rounded-[8px] sm:rounded-[10px] md:rounded-[12px] text-[8px] sm:text-[9px] md:text-xs font-black shadow-lg shadow-orange-500/20 disabled:opacity-50 flex items-center justify-center gap-0.5 sm:gap-1 transition-all px-0.5"
           >
-            <span className="truncate sm:inline">ADICIONAR</span>
-            <ShoppingCart size={10} className="sm:size-4 shrink-0" />
+            <span className="truncate">ADICIONAR</span>
+            <ShoppingCart size={8} className="sm:size-3.5 shrink-0" />
           </motion.button>
         )}
       </div>
@@ -356,6 +358,29 @@ ProductCard.displayName = 'ProductCard';
 export default function ProductCatalog() {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
+  const [headerHeight, setHeaderHeight] = useState(120);
+  const headerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!headerRef.current) return;
+    
+    const handleResize = () => {
+      if (headerRef.current) {
+        setHeaderHeight(headerRef.current.offsetHeight);
+      }
+    };
+    
+    handleResize();
+    
+    const observer = new ResizeObserver(handleResize);
+    observer.observe(headerRef.current);
+    
+    window.addEventListener('resize', handleResize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
   const [products, setProducts] = useState<Product[]>([]);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('VENDAS_dark') === '1');
   const [favorites, setFavorites] = useState<Favorite[]>([]);
@@ -1694,8 +1719,9 @@ export default function ProductCatalog() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#121212] pb-24 font-sans">
-      <header className="bg-brand-blue p-4 pt-safe sticky top-0 z-40 shadow-lg border-b border-white/5">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
+      <div ref={headerRef} className="sticky top-0 z-40 w-full shadow-sm">
+        <header className="bg-brand-blue p-4 pt-safe border-b border-white/5">
+          <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
             {profile?.role === 'admin' && (
               <motion.button 
                 whileHover={{ scale: 1.1, backgroundColor: "rgba(255,255,255,0.3)" }}
@@ -1797,7 +1823,7 @@ export default function ProductCatalog() {
         ))}
       </AnimatePresence>
 
-      <div className="bg-white dark:bg-[#1E1E1E] sticky top-[72px] z-30 shadow-sm border-b border-gray-100 dark:border-gray-800">
+      <div className="bg-white dark:bg-[#1E1E1E] border-b border-gray-100 dark:border-gray-800">
         <div className="max-w-5xl mx-auto flex">
           {['produtos', 'ofertas', 'lancamentos'].map(tab => (
             <motion.button 
@@ -1819,6 +1845,7 @@ export default function ProductCatalog() {
           ))}
         </div>
       </div>
+    </div>
 
       <div className="p-4 max-w-[1400px] mx-auto space-y-4">
         <ConfigWarning />
@@ -1827,7 +1854,10 @@ export default function ProductCatalog() {
         <div className="flex flex-col lg:flex-row gap-6 items-start">
           
           {/* LEFT SIDEBAR (Desktop only) */}
-          <aside className="hidden lg:block w-[280px] shrink-0 self-start sticky top-[152px] h-[calc(100vh-180px)] overflow-y-auto pr-2 pb-10 space-y-6 scroll-smooth">
+          <aside 
+            style={{ top: headerHeight + 24, height: `calc(100vh - ${headerHeight + 48}px)` }}
+            className="hidden lg:block w-[280px] shrink-0 self-start sticky overflow-y-auto pr-2 pb-10 space-y-6 scroll-smooth"
+          >
             
             {/* Brands/Manufacturers Card with official logo */}
             <div className="bg-white dark:bg-[#1E1E1E] rounded-3xl p-5 border border-gray-100 dark:border-gray-800 shadow-sm space-y-4">
@@ -2004,7 +2034,10 @@ export default function ProductCatalog() {
           <div className="flex-1 w-full space-y-4">
             
             {/* Filters and search row */}
-            <div className="sticky top-[120px] z-20 bg-slate-50 dark:bg-[#121212] py-2.5 -mx-4 px-4 flex flex-col gap-3 transition-all">
+            <div 
+              style={{ top: headerHeight - 1 }}
+              className="sticky z-20 bg-slate-50 dark:bg-[#121212] py-2.5 -mx-4 px-4 flex flex-col gap-3 transition-all"
+            >
               <div className="flex gap-2 relative">
                 <div className="relative flex-1">
                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
@@ -2201,13 +2234,13 @@ export default function ProductCatalog() {
 
             <main className="w-full">
               {loading ? (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
-                  {[...Array(8)].map((_, i) => <div key={i} className="bg-white dark:bg-[#1E1E1E] rounded-2xl overflow-hidden shadow-sm animate-pulse h-64" />)}
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-4">
+                  {[...Array(10)].map((_, i) => <div key={i} className="bg-white dark:bg-[#1E1E1E] rounded-2xl overflow-hidden shadow-sm animate-pulse h-64" />)}
                 </div>
               ) : filteredProducts.length === 0 ? (
                 <div className="text-center py-20 text-gray-500"><Package size={48} className="mx-auto mb-4" /><p>Nenhum produto encontrado.</p></div>
               ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-4">
                   {displayedProducts.map((p, index) => {
                     const cartItem = cart.find(item => item.id === p.id);
                     return (
