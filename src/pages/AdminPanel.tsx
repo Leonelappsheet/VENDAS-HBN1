@@ -1329,23 +1329,23 @@ export default function AdminPanel() {
                     <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 p-5 rounded-2xl space-y-4">
                       <div>
                         <span className="inline-block text-[9px] font-black bg-gray-100 text-gray-700 px-2 py-0.5 rounded mb-1 uppercase">Método 2 (Opção Alternativa)</span>
-                        <h5 className="font-bold text-xs text-gray-950 dark:text-white">⚙️ Hospedar seu próprio Backend API (Netlify / Vercel)</h5>
+                        <h5 className="font-bold text-xs text-gray-950 dark:text-white">⚙️ Hospedar seu próprio Backend API (Cloud Run / Netlify / Vercel)</h5>
                         <p className="text-[10px] text-gray-500 mt-0.5">
-                          Implante a API Node.js/Express integrada neste projeto no Netlify em apenas 1 minuto (guia no arquivo <code>DEPLOY_NETLIFY.md</code>).
+                          Ao hospedar o frontend no <strong>Cloudflare Workers</strong>, insira abaixo a URL pública do seu backend próprio (por exemplo, do Google Cloud Run ou Netlify) para evitar restrições de CORS e permitir atualizações de catálogo.
                         </p>
                       </div>
 
                       <div className="text-[10px] bg-gray-50 dark:bg-gray-800 p-2.5 rounded-xl flex flex-col gap-1">
                         <span className="font-bold text-gray-500">API Ativa no Momento:</span>
                         <code className="text-xs font-mono break-all text-orange-600 dark:text-orange-400 select-all">
-                          {getApiUrl() || '(Mesma Origem / Localhost)'}
+                          {getApiUrl() || '(Mesma Origem / Localhost / Cloudflare)'}
                         </code>
                       </div>
 
                       <div className="flex flex-col sm:flex-row gap-2">
                         <input
                           type="text"
-                          placeholder="Ex: https://vendas-hbn1.netlify.app (Sua URL da API no Netlify)"
+                          placeholder="Ex: https://meu-backend-cloudrun.run.app (Sua URL da API)"
                           value={customApiUrl}
                           onChange={(e) => setCustomApiUrl(e.target.value)}
                           className="flex-1 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-orange-500 dark:text-white"

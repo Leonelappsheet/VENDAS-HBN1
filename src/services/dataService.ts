@@ -43,6 +43,13 @@ export const getApiUrl = (): string => {
                              hostname === '127.0.0.1' || 
                              hostname.includes('run.app');
     
+    // Se o usuário está acessando do Cloudflare Workers ou outro domínio público externo,
+    // não podemos usar o fallback do AI Studio (ais-pre) por padrão pois causará erros de CORS/Redirect.
+    // Em vez disso, retornamos vazio para usar caminhos relativos (mesmo host) ou incentivamos configurar a API.
+    if (hostname.includes('workers.dev') || hostname.includes('pages.dev') || hostname.includes('cloudflare')) {
+      return '';
+    }
+
     if (!isNetlify && !isLocalOrInternal) {
       return 'https://ais-pre-nbovrry5l37awj3udhoyr6-141290312650.us-west2.run.app';
     }
