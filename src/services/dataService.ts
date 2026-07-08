@@ -1068,23 +1068,29 @@ export const dataService = {
   },
 
   // Cart Persistence
-  async saveCart(clientId: string, items: OrderItem[]) {
+  async saveCart(clientId: string | number, items: OrderItem[]) {
     const path = 'carts';
+    const cleanId = String(clientId);
     try {
       if (items.length === 0) {
-        await deleteDoc(doc(db, path, clientId));
+        await deleteDoc(doc(db, path, cleanId));
       } else {
-        await setDoc(doc(db, path, clientId), { items, updatedAt: new Date().toISOString() });
+        // Clean items by JSON serializing and parsing to strip undefined values which throw errors in Firestore
+        const cleanItems = JSON.parse(JSON.stringify(items));
+        await setDoc(doc(db, path, cleanId), { items: cleanItems, updatedAt: new Date().toISOString() });
       }
     } catch (error) {
+      console.error('Error saving cart to Firestore:', error);
       handleFirestoreError(error, OperationType.WRITE, path);
+      throw error; // Rethrow to ensure caller is aware of the failure
     }
   },
 
-  async getCart(clientId: string) {
+  async getCart(clientId: string | number) {
     const path = 'carts';
+    const cleanId = String(clientId);
     try {
-      const docSnap = await getDoc(doc(db, path, clientId));
+      const docSnap = await getDoc(doc(db, path, cleanId));
       return docSnap.exists() ? docSnap.data().items as OrderItem[] : [];
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, path);

@@ -16,7 +16,11 @@ import {
   X,
   PlusCircle,
   Download,
-  Sparkles
+  Sparkles,
+  Package,
+  ListPlus,
+  ClipboardList,
+  Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency, normalizeEAN } from '../lib/utils';
@@ -46,6 +50,80 @@ export default function ImportPanel() {
   const [selectedRegional, setSelectedRegional] = useState<string>('TIMON-MA');
   const [isProcessing, setIsProcessing] = useState(false);
 
+  const [showBulkImport, setShowBulkImport] = useState(false);
+  const [bulkImportText, setBulkImportText] = useState('');
+  const [selectedImportClient, setSelectedImportClient] = useState<any>(null);
+  const [clientSearchTerm, setClientSearchTerm] = useState('');
+
+  const parsedBulkItems = useMemo(() => {
+    if (!bulkImportText.trim()) return [];
+    
+    const lines = bulkImportText.split('\n');
+    return lines.map(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return null;
+      
+      // Split by tab, space, semicolon, comma, or vertical bar
+      const parts = trimmed.split(/[\t\s,;|]+/);
+      if (parts.length === 0) return null;
+      
+      const code = parts[0].trim();
+      let qty = 1;
+      if (parts.length > 1) {
+        const parsedQty = parseInt(parts[1].trim(), 10);
+        if (!isNaN(parsedQty)) {
+          qty = parsedQty;
+        }
+      }
+      
+      // Look up product by EAN or ID (code)
+      const cleanCode = code.replace(/^0+/, '');
+      const product = allProducts.find(p => {
+        const pEanClean = p.ean ? p.ean.replace(/^0+/, '') : '';
+        const pIdClean = p.id ? p.id.replace(/^0+/, '') : '';
+        return pEanClean === cleanCode || pIdClean === cleanCode || p.ean === code || p.id === code || normalizeEAN(p.ean) === normalizeEAN(code);
+      }) || null;
+      
+      let error: string | null = null;
+      if (!product) {
+        error = 'Não encontrado';
+      } else if (product.stock <= 0) {
+        error = 'Sem estoque';
+      } else if (qty > product.stock) {
+        error = `Estoque insuficiente (Disponível: ${product.stock})`;
+      }
+      
+      return {
+        inputLine: line,
+        code,
+        quantity: qty,
+        product,
+        error
+      };
+    }).filter(Boolean);
+  }, [bulkImportText, allProducts]);
+
+  const bulkImportTotal = useMemo(() => {
+    return parsedBulkItems.reduce((acc, item) => {
+      if (item && item.product && !item.error) {
+        const qty = Math.min(item.quantity, item.product.stock);
+        return acc + (item.product.finalPrice * qty);
+      }
+      return acc;
+    }, 0);
+  }, [parsedBulkItems]);
+
+  const filteredClients = useMemo(() => {
+    if (!clientSearchTerm.trim()) return allClients;
+    const term = clientSearchTerm.toLowerCase();
+    return allClients.filter(c => 
+      c.name?.toLowerCase().includes(term) || 
+      c.tradeName?.toLowerCase().includes(term) || 
+      c.cnpj?.includes(term) ||
+      c.id?.toString().includes(term)
+    );
+  }, [allClients, clientSearchTerm]);
+
   useEffect(() => {
     if (profile?.role === 'vendedor' && profile.regional) {
       const reg = profile.regional.toUpperCase();
@@ -57,6 +135,63 @@ export default function ImportPanel() {
       }
     }
   }, [profile]);
+
+  const handleApplyManualImport = () => {
+    if (!selectedImportClient) {
+      toast.error('Selecione um cliente para prosseguir com a importação.');
+      return;
+    }
+
+    const validItems = parsedBulkItems.filter(item => item && item.product);
+    if (validItems.length === 0) {
+      toast.error('Nenhum produto válido identificado na lista.');
+      return;
+    }
+
+    const newResult = {
+      clientName: selectedImportClient.name,
+      cnpj: selectedImportClient.cnpj || '',
+      client: selectedImportClient,
+      headerInfo: {
+        cotacao: `MANUAL-${Date.now().toString().slice(-4)}`,
+        fornecedor: 'IMPORTAÇÃO MANUAL EAN',
+        status: 'Pendente',
+        dataEntrega: new Date().toLocaleDateString('pt-BR'),
+      },
+      items: parsedBulkItems.map(item => {
+        const product = item?.product;
+        return {
+          ean: item?.code || '',
+          quantity: item?.quantity || 1,
+          description: product ? product.description : 'Produto não cadastrado',
+          found: !!product,
+          product: product,
+          scannedName: product ? product.description : 'Produto não cadastrado',
+          scannedCode: item?.code || '',
+          scannedPrice: product ? product.finalPrice : 0,
+        };
+      })
+    };
+
+    setResults([newResult]);
+
+    // Auto-check all found items
+    const initialChecked = new Set<string>();
+    newResult.items.forEach((item, iIdx) => {
+      if (item.found) {
+        initialChecked.add(`0-${iIdx}`);
+      }
+    });
+    setCheckedItems(initialChecked);
+
+    // Reset and close modal
+    setShowBulkImport(false);
+    setBulkImportText('');
+    setSelectedImportClient(null);
+    setClientSearchTerm('');
+    
+    toast.success(`Lista importada para ${selectedImportClient.name}. Verifique os detalhes e clique em "Fazer Pedido" abaixo.`);
+  };
 
   const toggleClientSelection = (clientIdx: number) => {
     const newChecked = new Set(checkedItems);
@@ -108,7 +243,13 @@ export default function ImportPanel() {
       });
 
       localStorage.setItem(cartKey, JSON.stringify(cartItems));
-      await dataService.saveCart(client.id, cartItems);
+      
+      try {
+        await dataService.saveCart(client.id, cartItems);
+      } catch (fsErr) {
+        console.warn('Silent fallback for Firestore saveCart failure:', fsErr);
+      }
+
       toast.success(`${selectedItems.length} itens adicionados ao carrinho de ${client.name}`);
       
       // Uncheck items for this client after adding to cart
@@ -531,7 +672,13 @@ export default function ImportPanel() {
           });
 
           localStorage.setItem(cartKey, JSON.stringify(cartItems));
-          await dataService.saveCart(client.id, cartItems);
+          
+          try {
+            await dataService.saveCart(client.id, cartItems);
+          } catch (fsErr) {
+            console.warn(`Silent fallback for Firestore saveCart failure (client ${client.id}):`, fsErr);
+          }
+
           totalAdded += selectedItems.length;
           clientsWithOrders++;
           processedClients.push(client.name);
@@ -1581,9 +1728,27 @@ export default function ImportPanel() {
                 PDF (A7 Pharma) ou Excel/CSV<br />com EAN + Quantidade
               </p>
             </div>
-            <button className="mt-4 bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white px-8 py-3 rounded-full font-bold text-sm shadow-lg">
-              Escolher arquivo
-            </button>
+            <div className="flex flex-col sm:flex-row gap-3 mt-4 w-full justify-center">
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  document.getElementById('fileInput')?.click();
+                }}
+                className="bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white px-6 py-3 rounded-full font-bold text-xs uppercase tracking-wider shadow-lg hover:scale-[1.02] active:scale-[0.98] transition-transform cursor-pointer"
+              >
+                Escolher arquivo
+              </button>
+              <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowBulkImport(true);
+                }}
+                className="bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 px-6 py-3 rounded-full font-bold text-xs uppercase tracking-wider shadow-md hover:scale-[1.02] active:scale-[0.98] hover:bg-gray-50 dark:hover:bg-gray-700 transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <ClipboardList size={14} />
+                Digitar EAN/Qtd
+              </button>
+            </div>
           </div>
 
           {/* Catalog Update Card */}
@@ -2180,6 +2345,271 @@ export default function ImportPanel() {
                 />
               </motion.div>
             </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Manual Bulk Import Modal */}
+        <AnimatePresence>
+          {showBulkImport && (
+            <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95, y: 20 }} 
+                animate={{ opacity: 1, scale: 1, y: 0 }} 
+                exit={{ opacity: 0, scale: 0.95, y: 20 }} 
+                className="bg-white dark:bg-[#1E1E1E] rounded-3xl w-full max-w-5xl max-h-[92vh] overflow-hidden flex flex-col shadow-2xl border border-gray-100 dark:border-gray-800"
+              >
+                {/* Modal Header */}
+                <div className="p-6 border-b border-gray-100 dark:border-gray-800 flex justify-between items-center bg-brand-blue text-white font-sans">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-white/10 rounded-xl">
+                      <ListPlus size={22} className="text-white" />
+                    </div>
+                    <div>
+                      <h3 className="font-black text-lg leading-tight">Digitar EAN e Quantidade</h3>
+                      <p className="text-white/70 text-[11px]">Crie um pedido rapidamente informando os EANs e quantidades</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setShowBulkImport(false);
+                      setBulkImportText('');
+                      setSelectedImportClient(null);
+                      setClientSearchTerm('');
+                    }} 
+                    className="p-1.5 hover:bg-white/10 rounded-full transition-colors cursor-pointer"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                {/* Modal Body */}
+                <div className="flex-1 overflow-y-auto grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-gray-100 dark:divide-gray-800 font-sans">
+                  {/* Left Side: Input Text & Client Selector (7 cols) */}
+                  <div className="lg:col-span-7 p-6 flex flex-col gap-5 overflow-y-auto max-h-[50vh] lg:max-h-[68vh]">
+                    {/* Step 1: Select Client */}
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase block tracking-wider">
+                        Passo 1: Selecionar Cliente
+                      </label>
+                      {selectedImportClient ? (
+                        <div className="bg-blue-50/50 dark:bg-blue-950/15 border border-blue-100 dark:border-blue-900/30 rounded-2xl p-4 flex justify-between items-center">
+                          <div className="flex items-center gap-3">
+                            <div className="text-2xl">🏪</div>
+                            <div>
+                              <p className="font-bold text-sm text-gray-800 dark:text-gray-200 uppercase">
+                                {selectedImportClient.name}
+                              </p>
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                CNPJ: {selectedImportClient.cnpj || 'Não informado'} • {selectedImportClient.city || 'N/A'} - {selectedImportClient.state || 'N/A'}
+                              </p>
+                            </div>
+                          </div>
+                          <button 
+                            onClick={() => setSelectedImportClient(null)}
+                            className="text-xs text-red-500 hover:text-red-600 font-bold uppercase hover:underline cursor-pointer"
+                          >
+                            Alterar
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="relative">
+                            <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-gray-400">
+                              <Search size={16} />
+                            </span>
+                            <input
+                              type="text"
+                              value={clientSearchTerm}
+                              onChange={(e) => setClientSearchTerm(e.target.value)}
+                              placeholder="Buscar cliente por nome, CNPJ, ID..."
+                              className="w-full bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700/60 rounded-xl py-2.5 pl-10 pr-4 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 text-gray-800 dark:text-white placeholder-gray-400"
+                            />
+                          </div>
+                          <div className="max-h-[140px] overflow-y-auto border border-gray-100 dark:border-gray-800 rounded-xl divide-y divide-gray-50 dark:divide-gray-800 bg-white dark:bg-[#151515]">
+                            {filteredClients.length === 0 ? (
+                              <p className="p-4 text-center text-xs text-gray-400">Nenhum cliente encontrado.</p>
+                            ) : (
+                              filteredClients.map((client) => (
+                                <button
+                                  key={client.id}
+                                  onClick={() => setSelectedImportClient(client)}
+                                  className="w-full text-left p-3 hover:bg-gray-50 dark:hover:bg-gray-800/40 flex items-center justify-between text-xs transition-colors group cursor-pointer"
+                                >
+                                  <div className="min-w-0 pr-4">
+                                    <p className="font-black text-gray-800 dark:text-gray-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 uppercase truncate">
+                                      {client.name}
+                                    </p>
+                                    <p className="text-[10px] text-gray-400 mt-0.5 truncate">
+                                      {client.cnpj || 'Sem CNPJ'} • {client.city || 'N/A'}
+                                    </p>
+                                  </div>
+                                  <span className="text-blue-500 font-black shrink-0 group-hover:translate-x-1 transition-transform">Selecionar &rarr;</span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Step 2: Paste List */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase block tracking-wider">
+                          Passo 2: Inserir EAN e Quantidade
+                        </label>
+                        <span className="text-[10px] text-gray-400">Um item por linha</span>
+                      </div>
+
+                      <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/30 rounded-2xl p-4 text-xs text-amber-800 dark:text-amber-300 space-y-1 font-sans">
+                        <p className="font-bold">Formato de entrada:</p>
+                        <pre className="font-mono bg-white/50 dark:bg-black/20 p-2 rounded-lg text-[10px] overflow-x-auto">
+                          7891150037465{"\t"}6{"\n"}
+                          7891000342345{"\t"}10
+                        </pre>
+                      </div>
+
+                      <textarea
+                        value={bulkImportText}
+                        onChange={(e) => setBulkImportText(e.target.value)}
+                        placeholder={"7891150037465\t6\n7891000342345\t10"}
+                        className="w-full min-h-[150px] bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700/60 rounded-2xl p-4 font-mono text-xs outline-none focus:ring-2 focus:ring-blue-500/20 resize-none placeholder-gray-400 dark:text-white"
+                      />
+
+                      {bulkImportText && (
+                        <div className="flex items-center justify-between text-xs text-gray-400 mt-1">
+                          <span>Total de linhas: {bulkImportText.split('\n').filter(l => l.trim()).length}</span>
+                          <button 
+                            onClick={() => setBulkImportText('')}
+                            className="text-red-500 hover:text-red-600 font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                          >
+                            <Trash2 size={12} />
+                            Limpar
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Right Side: Preview & Totals (5 cols) */}
+                  <div className="lg:col-span-5 p-6 bg-gray-50/50 dark:bg-black/10 flex flex-col gap-4 overflow-y-auto max-h-[40vh] lg:max-h-[68vh]">
+                    <div className="border-b border-gray-100 dark:border-gray-800 pb-3">
+                      <label className="text-[10px] font-black text-gray-400 dark:text-gray-500 uppercase block tracking-wider">
+                        Resumo da Lista ({parsedBulkItems.filter(item => item && item.product && !item.error).length} identificados)
+                      </label>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto space-y-3 pr-1 min-h-[200px] lg:min-h-0">
+                      {parsedBulkItems.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-12 text-center gap-3 text-gray-400 dark:text-gray-500">
+                          <ClipboardList size={32} className="stroke-[1.5]" />
+                          <p className="text-xs font-medium leading-normal">Insira os EANs e quantidades para visualizar a lista.</p>
+                        </div>
+                      ) : (
+                        parsedBulkItems.map((item: any, i: number) => {
+                          if (!item) return null;
+                          const hasError = !!item.error;
+                          
+                          return (
+                            <div 
+                              key={i} 
+                              className={cn(
+                                "flex items-center gap-3 p-3 rounded-2xl border transition-all duration-200",
+                                hasError 
+                                  ? "bg-red-50/50 dark:bg-red-950/10 border-red-100/60 dark:border-red-900/20" 
+                                  : "bg-white dark:bg-[#252525] border-gray-100 dark:border-gray-800 hover:shadow-sm"
+                              )}
+                            >
+                              {/* Product Thumbnail */}
+                              {item.product ? (
+                                <img 
+                                  src={item.product.photo} 
+                                  alt={item.product.description} 
+                                  className="w-10 h-10 object-contain bg-white rounded-xl border border-gray-100 dark:border-gray-800 shrink-0" 
+                                  referrerPolicy="no-referrer"
+                                />
+                              ) : (
+                                <div className="w-10 h-10 rounded-xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center shrink-0 border border-gray-200/50 dark:border-gray-700 text-gray-400">
+                                  <Package size={16} />
+                                </div>
+                              )}
+
+                              {/* Details */}
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[11px] font-black truncate text-gray-800 dark:text-gray-200">
+                                  {item.product ? item.product.description : `Código: ${item.code}`}
+                                </p>
+                                
+                                <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                                  <span className="font-mono text-[8px] px-1 py-0.5 rounded-md bg-gray-100 dark:bg-gray-800 text-gray-500 border border-gray-200/40 dark:border-gray-700/40">
+                                    {item.code}
+                                  </span>
+                                  
+                                  {hasError ? (
+                                    <span className="text-[8px] font-bold px-1 py-0.5 rounded-md bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300 max-w-[120px] truncate" title={item.error}>
+                                      {item.error}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[8px] font-bold px-1 py-0.5 rounded-md bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-300">
+                                      Disponível
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Quantity & Price */}
+                              <div className="text-right shrink-0">
+                                <p className="text-[11px] font-black text-gray-800 dark:text-gray-200">
+                                  Qtd: <span className="text-blue-600 dark:text-blue-400">{item.quantity}</span>
+                                </p>
+                                {item.product && !hasError && (
+                                  <p className="text-[9px] text-gray-400 font-bold mt-0.5">
+                                    {formatCurrency(item.product.finalPrice * Math.min(item.quantity, item.product.stock))}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Modal Footer Actions */}
+                <div className="p-6 border-t border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 flex flex-col sm:flex-row justify-between items-center gap-4">
+                  <div className="text-center sm:text-left">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 font-semibold font-sans">Valor Total Estimado:</p>
+                    <p className="text-xl font-black text-brand-orange mt-0.5 font-sans">{formatCurrency(bulkImportTotal)}</p>
+                  </div>
+
+                  <div className="flex gap-3 w-full sm:w-auto font-sans">
+                    <motion.button 
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => {
+                        setShowBulkImport(false);
+                        setBulkImportText('');
+                        setSelectedImportClient(null);
+                        setClientSearchTerm('');
+                      }}
+                      className="flex-1 sm:flex-initial px-5 py-3 rounded-2xl bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/80 font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer"
+                    >
+                      Cancelar
+                    </motion.button>
+                    <motion.button 
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={handleApplyManualImport}
+                      disabled={!selectedImportClient || parsedBulkItems.filter(item => item && item.product && !item.error).length === 0}
+                      className="flex-1 sm:flex-initial px-6 py-3 rounded-2xl bg-brand-orange hover:bg-brand-orange/90 text-white font-black text-xs uppercase tracking-wider shadow-lg shadow-brand-orange/10 disabled:opacity-50 transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      Importar Pedido ({parsedBulkItems.filter(item => item && item.product && !item.error).length})
+                    </motion.button>
+                  </div>
+                </div>
+              </motion.div>
+            </div>
           )}
         </AnimatePresence>
       </main>
