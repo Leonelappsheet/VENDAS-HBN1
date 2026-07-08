@@ -349,7 +349,7 @@ export default function ImportPanel() {
           try {
             const typedarray = new Uint8Array(e.target?.result as ArrayBuffer);
             const pdf = await pdfjs.getDocument(typedarray).promise;
-            let fullText = '';
+            const pageTexts: { pageIndex: number; text: string }[] = [];
             
             for (let i = 1; i <= pdf.numPages; i++) {
               const page = await pdf.getPage(i);
@@ -404,117 +404,71 @@ export default function ImportPanel() {
               }
               
               const pageText = visualLines.join('\n');
-              fullText += pageText + '\n';
+              pageTexts.push({ pageIndex: i, text: pageText });
             }
 
-            const lines = fullText.split('\n');
             const importResults: any[] = [];
-            let currentClient: any = null;
+            let lastDetectedClient: any = null;
 
-            // 1. First pass: Identify clients and their positions in the text
-            const clientMatches = Array.from(fullText.matchAll(/Unidade:\s*(.*?)(?=Usuário:|CNPJ:|$)/gi));
-
-            // 2. Second pass: Identify all products with EAN, Description, Quantity and Price
-            // Using a resilient, high-precision regex matching the percent column (%) which is highly reliable in A7 Pharma reports
-            // Format: [EAN 8-14 digits] [Description] [% Discount or numeric percent value] [Quantity] [Total]
-            const productRegexPercent = /(\d{8,14})\s+([^\n]*?)\s+([\d\.,]+\s*%)\s+([\d\.]+)\s+([\d\.]+,\d{2})/g;
-            let allProductsFound = Array.from(fullText.matchAll(productRegexPercent)).map(m => {
-              const ean = normalizeEAN(m[1]);
-              const rawDesc = m[2].trim();
-              const quantityStr = m[4].replace(/\./g, '');
-              const quantity = parseInt(quantityStr);
+            for (const pageObj of pageTexts) {
+              const pageText = pageObj.text;
               
-              // Extract unit price from the end of raw description if present
-              const priceMatch = rawDesc.match(/([\d\.]+,\d{2})\s*$/);
-              let priceStr = '0,00';
-              let description = rawDesc;
-              if (priceMatch) {
-                priceStr = priceMatch[1];
-                description = rawDesc.substring(0, priceMatch.index).trim();
-              } else {
-                // Heuristic breakdown of total & quantity
-                const totalStr = m[5].replace(/\./g, '').replace(',', '.');
-                const totalVal = parseFloat(totalStr);
-                if (!isNaN(totalVal) && quantity > 0) {
-                  priceStr = (totalVal / quantity).toFixed(2).replace('.', ',');
-                }
-              }
+              // 1. Identify client header on this page
+              // A. Nazaria Filial header
+              const filialMatch = pageText.match(/Filial:\s*(\d+)\s+([\d\.\/\-]+)\s+([^\n]+)/i);
               
-              const entry = [m[0], ean, description, String(quantity), priceStr] as any;
-              entry.index = m.index;
-              return entry;
-            });
-
-            // Fallback matching if percent-based regex produced no matches
-            if (allProductsFound.length === 0) {
-              const productRegex = /(\d{8,14})\s+([^\n]*?)\s+([\d\.]+)\s+([\d\.]+,\d{2})/g;
-              const matches = Array.from(fullText.matchAll(productRegex));
+              // B. A7 Pharma Unidade header
+              const unidadeMatch = pageText.match(/Unidade:\s*(.*?)(?=Usuário:|CNPJ:|$)/i);
               
-              if (matches.length > 0) {
-                allProductsFound = matches.map(m => {
-                  const ean = normalizeEAN(m[1]);
-                  const desc = m[2].trim();
-                  const qty = parseInt(m[3].replace(/\./g, ''));
-                  const priceStr = m[4];
-                  const entry = [m[0], ean, desc, String(qty), priceStr] as any;
-                  entry.index = m.index;
-                  return entry;
-                });
-              } else {
-                // Extract individual EAN elements and scan surrounding blocks
-                const eanRegex = /\b\d{8,14}\b/g;
-                const eanMatches = Array.from(fullText.matchAll(eanRegex));
+              let clientObj: any = null;
+              
+              if (filialMatch) {
+                const filialNum = filialMatch[1];
+                const cnpjRaw = filialMatch[2];
+                const nameRaw = filialMatch[3];
+                const cnpj = cnpjRaw.replace(/[^\d]/g, '');
                 
-                eanMatches.forEach((match, idx) => {
-                  const rawEan = match[0];
-                  const ean = normalizeEAN(rawEan);
-                  const startPos = match.index || 0;
-                  const endPos = eanMatches[idx + 1] ? eanMatches[idx + 1].index : fullText.length;
-                  const blockText = fullText.substring(startPos, endPos).trim();
-                  
-                  const qpMatch = blockText.match(/([\d\.]+)\s+([\d\.]+,\d{2})/);
-                  if (qpMatch) {
-                    const quantity = parseInt(qpMatch[1].replace(/\./g, ''));
-                    const price = qpMatch[2];
-                    const description = blockText.substring(rawEan.length, qpMatch.index).trim();
-                    const entry = [match[0], ean, description, String(quantity), price] as any;
-                    entry.index = match.index;
-                    allProductsFound.push(entry);
-                  } else {
-                    const qMatch = blockText.match(/([\d\.]+)\s*$/);
-                    if (qMatch) {
-                      const quantity = parseInt(qMatch[1].replace(/\./g, ''));
-                      const description = blockText.substring(rawEan.length, qMatch.index).trim();
-                      const entry = [match[0], ean, description, String(quantity), "0,00"] as any;
-                      entry.index = match.index;
-                      allProductsFound.push(entry);
-                    }
+                // Clean the name of trailing form details or pagination info
+                let name = nameRaw;
+                const truncateKeywords = [
+                  'Forma de Pagamento', 'Bairro', 'Endereço', 'Endereco', 
+                  'Cep', 'Cidade', 'UF', 'Numero Pedido', 'Dt. Emissão', 'Dt. Emissao'
+                ];
+                truncateKeywords.forEach(kw => {
+                  const idx = name.toLowerCase().indexOf(kw.toLowerCase());
+                  if (idx !== -1) {
+                    name = name.substring(0, idx).trim();
                   }
                 });
-              }
-            }
-
-            // 3. Group products by client based on their position in the text
-            if (clientMatches.length > 0) {
-              clientMatches.forEach((match, index) => {
-                const name = match[1].trim();
-                if (name.toUpperCase().includes('ESCRITÓRIO')) return;
-
-                const startPos = match.index || 0;
-                const endPos = clientMatches[index + 1] ? clientMatches[index + 1].index : fullText.length;
-                const clientText = fullText.substring(startPos, endPos || fullText.length);
-
-                const cnpjMatch = clientText.match(/CNPJ:\s*([\d\.\/\-]+)/i);
+                name = name.replace(/[\s\-–—]+$/, '').trim();
+                
+                const fornecedorMatch = pageText.match(/Fornecedor:\s*(.*?)(?=Numero|$)/i);
+                const numeroPedidoMatch = pageText.match(/Numero Pedido:\s*(\d+)/i);
+                
+                clientObj = {
+                  clientName: name,
+                  cnpj: cnpj,
+                  items: [],
+                  headerInfo: {
+                    fornecedor: fornecedorMatch ? fornecedorMatch[1].trim() : 'NAZARIA DISTRIBUIDORA',
+                    condPgto: '',
+                    status: 'Pendente',
+                    dataEntrega: '',
+                    cotacao: numeroPedidoMatch ? `Pedido #${numeroPedidoMatch[1]}` : `Filial ${filialNum}`
+                  }
+                };
+              } else if (unidadeMatch) {
+                const name = unidadeMatch[1].trim();
+                const cnpjMatch = pageText.match(/CNPJ:\s*([\d\.\/\-]+)/i);
                 const cnpj = cnpjMatch ? cnpjMatch[1].trim().replace(/[^\d]/g, '') : '';
-
-                // Extract extra header info for A7 Pharma
-                const fornecedorMatch = clientText.match(/Fornecedor:\s*(.*?)(?=Cond\.|$)/i);
-                const condPgtoMatch = clientText.match(/Cond\. Pgto:\s*(.*?)(?=Status|$)/i);
-                const statusMatch = clientText.match(/Status:\s*(.*?)(?=Data|$)/i);
-                const dataEntregaMatch = clientText.match(/Data Entrega:\s*([\d/]+\s*[\d:]*)/i);
-                const cotacaoMatch = clientText.match(/Cotação:\s*(.*?)(?=\n|$)/i);
-
-                const clientObj: any = {
+                
+                const fornecedorMatch = pageText.match(/Fornecedor:\s*(.*?)(?=Cond\.|$)/i);
+                const condPgtoMatch = pageText.match(/Cond\. Pgto:\s*(.*?)(?=Status|$)/i);
+                const statusMatch = pageText.match(/Status:\s*(.*?)(?=Data|$)/i);
+                const dataEntregaMatch = pageText.match(/Data Entrega:\s*([\d/]+\s*[\d:]*)/i);
+                const cotacaoMatch = pageText.match(/Cotação:\s*(.*?)(?=\n|$)/i);
+                
+                clientObj = {
                   clientName: name,
                   cnpj: cnpj,
                   items: [],
@@ -526,73 +480,184 @@ export default function ImportPanel() {
                     cotacao: cotacaoMatch ? cotacaoMatch[1].trim() : ''
                   }
                 };
-
-                // Find client in system
-                const matchedClient = allClients.find(c => 
-                  (cnpj && c.cnpj.replace(/[^\d]/g, '') === cnpj) ||
-                  c.name.toLowerCase().includes(name.toLowerCase()) ||
-                  name.toLowerCase().includes(c.name.toLowerCase())
-                );
-                if (matchedClient) clientObj.client = matchedClient;
-
-                // Find products that belong to this client block
-                allProductsFound.forEach(pMatch => {
-                  const pPos = pMatch.index || 0;
-                  if (pPos >= startPos && pPos < (endPos || fullText.length)) {
-                    const ean = normalizeEAN(pMatch[1]);
-                    const description = pMatch[2].trim();
-                    const quantity = parseInt(pMatch[3]);
-                    const priceStr = pMatch[4] ? pMatch[4].replace(/\./g, '').replace(',', '.') : '0';
-                    const price = parseFloat(priceStr);
-                    
-                    const product = allProducts.find(p => normalizeEAN(p.ean) === ean);
-                    
-                    if (!clientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
-                      clientObj.items.push({
-                        ean,
-                        quantity: isNaN(quantity) ? 1 : quantity,
-                        description: product?.description || description,
-                        found: !!product,
-                        product: product,
-                        price: price
-                      });
+              }
+              
+              // Handle context carry over or fallback
+              if (!clientObj) {
+                if (lastDetectedClient) {
+                  // Carry over last client info to this page
+                  clientObj = {
+                    clientName: lastDetectedClient.clientName,
+                    cnpj: lastDetectedClient.cnpj,
+                    items: [],
+                    headerInfo: { ...lastDetectedClient.headerInfo }
+                  };
+                } else {
+                  clientObj = {
+                    clientName: 'Cliente Não Identificado',
+                    cnpj: '',
+                    items: [],
+                    headerInfo: { fornecedor: '', condPgto: '', status: '', dataEntrega: '', cotacao: '' }
+                  };
+                }
+              } else {
+                lastDetectedClient = clientObj;
+              }
+              
+              // Try to find the exact client in allClients database
+              const targetCnpj = clientObj.cnpj;
+              const targetName = clientObj.clientName.toLowerCase();
+              const matchedClient = allClients.find(c => {
+                const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                if (targetCnpj && dbCnpj === targetCnpj) return true;
+                return c.name.toLowerCase().includes(targetName) || targetName.includes(c.name.toLowerCase());
+              });
+              if (matchedClient) {
+                clientObj.client = matchedClient;
+                // Use matched client name for visual consistency
+                clientObj.clientName = matchedClient.name;
+              }
+              
+              // 2. Extract products on this page
+              const pageLines = pageText.split('\n');
+              const pageProductsFound: any[] = [];
+              
+              // Pattern A: Nazaria format line matcher
+              // Example: 7891025111832 APTAMIL 1 PREMIUM 400G DANONE UN 1 X 1 3
+              const nazariaProdRegex = /(\d{8,14})\s+(.*?)\s+([A-Z0-9\s.\-]+)\s+([A-Z]{1,3})\s+(\d+(?:\s*[xX]\s*\d+)?)\s+(\d+)/;
+              
+              // Pattern B: A7 Pharma percent format
+              const productRegexPercent = /(\d{8,14})\s+([^\n]*?)\s+([\d\.,]+\s*%)\s+([\d\.]+)\s+([\d\.]+,\d{2})/;
+              
+              // Pattern C: Standard generic product regex
+              const productRegexNormal = /(\d{8,14})\s+([^\n]*?)\s+([\d\.]+)\s+([\d\.]+,\d{2})/;
+              
+              pageLines.forEach((line) => {
+                const trimmedLine = line.trim();
+                
+                // Let's test Nazaria first
+                const nazariaMatch = trimmedLine.match(nazariaProdRegex);
+                if (nazariaMatch) {
+                  const ean = normalizeEAN(nazariaMatch[1]);
+                  const desc = nazariaMatch[2].trim();
+                  const quantity = parseInt(nazariaMatch[6]);
+                  pageProductsFound.push({ ean, desc, quantity, price: 0 });
+                  return;
+                }
+                
+                // Next, let's test percent format
+                const percentMatch = trimmedLine.match(productRegexPercent);
+                if (percentMatch) {
+                  const ean = normalizeEAN(percentMatch[1]);
+                  const rawDesc = percentMatch[2].trim();
+                  const quantityStr = percentMatch[4].replace(/\./g, '');
+                  const quantity = parseInt(quantityStr);
+                  
+                  // Extract price
+                  const priceMatch = rawDesc.match(/([\d\.]+,\d{2})\s*$/);
+                  let priceVal = 0;
+                  let description = rawDesc;
+                  if (priceMatch) {
+                    priceVal = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+                    description = rawDesc.substring(0, priceMatch.index).trim();
+                  } else {
+                    const totalVal = parseFloat(percentMatch[5].replace(/\./g, '').replace(',', '.'));
+                    if (!isNaN(totalVal) && quantity > 0) {
+                      priceVal = totalVal / quantity;
+                    }
+                  }
+                  pageProductsFound.push({ ean, desc: description, quantity, price: priceVal });
+                  return;
+                }
+                
+                // Next, let's test normal product format
+                const normalMatch = trimmedLine.match(productRegexNormal);
+                if (normalMatch) {
+                  const ean = normalizeEAN(normalMatch[1]);
+                  const desc = normalMatch[2].trim();
+                  const quantity = parseInt(normalMatch[3].replace(/\./g, ''));
+                  const priceVal = parseFloat(normalMatch[4].replace(/\./g, '').replace(',', '.'));
+                  pageProductsFound.push({ ean, desc, quantity, price: priceVal });
+                  return;
+                }
+              });
+              
+              // Fallback EAN scan on this page if no products found with precise regexes
+              if (pageProductsFound.length === 0) {
+                const eanRegex = /\b\d{8,14}\b/g;
+                const eanMatches = Array.from(pageText.matchAll(eanRegex));
+                
+                eanMatches.forEach((match, idx) => {
+                  const rawEan = match[0];
+                  const ean = normalizeEAN(rawEan);
+                  const startPos = match.index || 0;
+                  const endPos = eanMatches[idx + 1] ? eanMatches[idx + 1].index : pageText.length;
+                  const blockText = pageText.substring(startPos, endPos).trim();
+                  
+                  const qpMatch = blockText.match(/([\d\.]+)\s+([\d\.]+,\d{2})/);
+                  if (qpMatch) {
+                    const quantity = parseInt(qpMatch[1].replace(/\./g, ''));
+                    const priceVal = parseFloat(qpMatch[2].replace(/\./g, '').replace(',', '.'));
+                    const description = blockText.substring(rawEan.length, qpMatch.index).trim();
+                    pageProductsFound.push({ ean, desc: description, quantity, price: priceVal });
+                  } else {
+                    const qMatch = blockText.match(/([\d\.]+)\s*$/);
+                    if (qMatch) {
+                      const quantity = parseInt(qMatch[1].replace(/\./g, ''));
+                      const description = blockText.substring(rawEan.length, qMatch.index).trim();
+                      pageProductsFound.push({ ean, desc: description, quantity, price: 0 });
                     }
                   }
                 });
-
-                if (clientObj.items.length > 0) {
-                  importResults.push(clientObj);
-                }
-              });
-            } else {
-              // No client headers found, put everything in a default client
-              currentClient = { clientName: 'Cliente Não Identificado', cnpj: '', items: [] };
-              allProductsFound.forEach(pMatch => {
-                const ean = normalizeEAN(pMatch[1]);
-                const description = pMatch[2].trim();
-                const quantity = parseInt(pMatch[3]);
-                const priceStr = pMatch[4] ? pMatch[4].replace(/\./g, '').replace(',', '.') : '0';
-                const price = parseFloat(priceStr);
-                const product = allProducts.find(p => normalizeEAN(p.ean) === ean);
+              }
+              
+              // Populate the products into clientObj
+              pageProductsFound.forEach(p => {
+                const product = allProducts.find(prod => normalizeEAN(prod.ean) === p.ean);
                 
-                if (!currentClient.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
-                  currentClient.items.push({
-                    ean,
-                    quantity: isNaN(quantity) ? 1 : quantity,
-                    description: product?.description || description,
+                // Ensure no duplicate items on the same page
+                if (!clientObj.items.find((item: any) => normalizeEAN(item.ean) === p.ean)) {
+                  clientObj.items.push({
+                    ean: p.ean,
+                    quantity: isNaN(p.quantity) ? 1 : p.quantity,
+                    description: product?.description || p.desc,
                     found: !!product,
                     product: product,
-                    price: price
+                    price: p.price || product?.finalPrice || 0
                   });
                 }
               });
-              if (currentClient.items.length > 0) {
-                importResults.push(currentClient);
+              
+              if (clientObj.items.length > 0) {
+                importResults.push(clientObj);
               }
             }
 
+            // 3. Merge identical clients
+            const mergedResults: any[] = [];
+            importResults.forEach(res => {
+              const existing = mergedResults.find(m => 
+                (res.cnpj && m.cnpj && res.cnpj === m.cnpj) ||
+                (res.client && m.client && res.client.id === m.client.id) ||
+                (res.clientName.toLowerCase() === m.clientName.toLowerCase())
+              );
+              
+              if (existing) {
+                res.items.forEach((item: any) => {
+                  const existingItem = existing.items.find((ei: any) => normalizeEAN(ei.ean) === normalizeEAN(item.ean));
+                  if (existingItem) {
+                    existingItem.quantity += item.quantity;
+                  } else {
+                    existing.items.push(item);
+                  }
+                });
+              } else {
+                mergedResults.push(res);
+              }
+            });
+
             // Filter out clients with no items
-            const finalResults = importResults.filter(r => r.items.length > 0);
+            const finalResults = mergedResults.filter(r => r.items.length > 0);
 
             if (finalResults.length > 0) {
               setResults(finalResults);
@@ -828,15 +893,15 @@ export default function ImportPanel() {
       headStyles: { fillColor: [255, 107, 0], textColor: 255, fontSize: 7, fontStyle: 'bold', halign: 'center' },
       styles: { fontSize: 7, cellPadding: 1.5, overflow: 'linebreak' },
       columnStyles: {
-        0: { halign: 'center', cellWidth: 15 },
-        1: { halign: 'center', cellWidth: 25 },
+        0: { halign: 'center', cellWidth: 18 },
+        1: { halign: 'center', cellWidth: 24 },
         2: { halign: 'left', cellWidth: 'auto' },
-        3: { halign: 'right', cellWidth: 20 },
-        4: { halign: 'center', cellWidth: 12 },
-        5: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 20 },
+        3: { halign: 'right', cellWidth: 18 },
+        4: { halign: 'center', cellWidth: 15 },
+        5: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 18 },
         6: { halign: 'center', cellWidth: 10 },
-        7: { halign: 'right', fontStyle: 'bold', textColor: [200, 0, 0], cellWidth: 25 },
-        8: { halign: 'center', cellWidth: 15 }
+        7: { halign: 'right', fontStyle: 'bold', textColor: [200, 0, 0], cellWidth: 22 },
+        8: { halign: 'center', cellWidth: 20 }
       },
       didParseCell: (data) => {
         if (data.section === 'body' && data.column.index === 8) {
@@ -1193,15 +1258,15 @@ export default function ImportPanel() {
         headStyles: { fillColor: [255, 107, 0], textColor: 255, fontSize: 7, fontStyle: 'bold', halign: 'center' },
         styles: { fontSize: 7, cellPadding: 1.5, overflow: 'linebreak' },
         columnStyles: {
-          0: { halign: 'center', cellWidth: 12 },
-          1: { halign: 'center', cellWidth: 22 },
+          0: { halign: 'center', cellWidth: 18 },
+          1: { halign: 'center', cellWidth: 24 },
           2: { halign: 'left', cellWidth: 'auto' },
-          3: { halign: 'right', cellWidth: 20 },
-          4: { halign: 'center', cellWidth: 10 },
-          5: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 20 },
+          3: { halign: 'right', cellWidth: 18 },
+          4: { halign: 'center', cellWidth: 15 },
+          5: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 18 },
           6: { halign: 'center', cellWidth: 10 },
-          7: { halign: 'right', fontStyle: 'bold', textColor: [200, 0, 0], cellWidth: 25 },
-          8: { halign: 'center', cellWidth: 15 }
+          7: { halign: 'right', fontStyle: 'bold', textColor: [200, 0, 0], cellWidth: 22 },
+          8: { halign: 'center', cellWidth: 20 }
         },
         didParseCell: (data) => {
           if (data.section === 'body' && data.column.index === 8) {
