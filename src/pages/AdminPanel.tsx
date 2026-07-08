@@ -383,21 +383,26 @@ export default function AdminPanel() {
   }, [orders]);
 
   return (
-    <div className="min-h-screen bg-[#FDF6F0] dark:bg-[#121212]">
+    <div className="min-h-screen bg-slate-50 dark:bg-[#121212] font-sans">
       {/* Header */}
-      <header className="bg-gradient-to-r from-[#FF6B00] to-[#F06292] p-4 pt-safe sticky top-0 z-40 shadow-lg">
+      <header className="bg-brand-blue p-4 pt-safe sticky top-0 z-40 shadow-lg border-b border-white/5">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <motion.button 
               whileHover={{ scale: 1.1, backgroundColor: "rgba(255,255,255,0.3)" }}
               whileTap={{ scale: 0.9 }}
               onClick={() => navigate('/')} 
-              className="p-2 bg-white/20 rounded-full text-white transition-colors"
+              className="p-2 bg-white/10 rounded-full text-white transition-colors"
             >
               <ChevronLeft size={24} />
             </motion.button>
-            <img src="/logo.svg" alt="Logo" className="w-8 h-8 brightness-0 invert" />
-            <h1 className="text-white font-bold text-lg">
+            {/* Star Logo */}
+            <div className="w-8 h-8 bg-brand-orange text-white rounded-lg flex items-center justify-center p-1.5 shadow-md shadow-brand-orange/20 shrink-0">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-full h-full">
+                <path d="M12 .587l3.668 7.431 8.2 1.192-5.934 5.787 1.4 8.168L12 18.896l-7.334 3.857 1.4-8.168L.132 9.21l8.2-1.192L12 .587z" />
+              </svg>
+            </div>
+            <h1 className="text-white font-display font-bold text-base uppercase tracking-tight">
               {profile?.role === 'admin' ? 'Painel Administrativo' : 'Meu Painel'}
             </h1>
           </div>
@@ -405,7 +410,7 @@ export default function AdminPanel() {
             whileHover={{ scale: 1.1, backgroundColor: "rgba(255,255,255,0.3)" }}
             whileTap={{ scale: 0.9 }}
             onClick={refreshData} 
-            className="p-2 bg-white/20 rounded-full text-white transition-colors"
+            className="p-2 bg-white/10 rounded-full text-white transition-colors"
           >
             <RefreshCw size={20} className={cn(loading && "animate-spin")} />
           </motion.button>

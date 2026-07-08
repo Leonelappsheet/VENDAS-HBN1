@@ -100,21 +100,25 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#FDF6F0] pb-20">
+    <div className="min-h-screen bg-slate-50 pb-20 font-sans">
       {/* Header */}
-      <header className="bg-white border-b border-orange-100 sticky top-0 z-40 px-6 py-4">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-40 px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button 
               onClick={() => navigate('/')}
-              className="p-3 hover:bg-orange-50 rounded-2xl text-orange-600 transition-colors shrink-0"
+              className="p-3 hover:bg-brand-orange/10 rounded-2xl text-brand-orange transition-colors shrink-0"
             >
               <ArrowLeft size={24} />
             </button>
-            <img src="/logo.svg" alt="Logo" className="w-10 h-10 shrink-0" />
+            <div className="w-10 h-10 bg-brand-orange text-white rounded-xl flex items-center justify-center p-1.5 shadow-md shadow-brand-orange/20 shrink-0">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-full h-full">
+                <path d="M12 .587l3.668 7.431 8.2 1.192-5.934 5.787 1.4 8.168L12 18.896l-7.334 3.857 1.4-8.168L.132 9.21l8.2-1.192L12 .587z" />
+              </svg>
+            </div>
             <div>
-              <h1 className="text-2xl font-black text-gray-900 tracking-tight leading-none">PAINEL ANAL\u00CDTICO</h1>
-              <p className="text-sm text-gray-500 font-medium">{profile?.role === 'admin' ? 'Vis\u00E3o Geral da Empresa' : `Minhas Vendas: ${profile?.name}`}</p>
+              <h1 className="font-display text-xl font-black text-brand-blue tracking-tight leading-none">PAINEL ANALÍTICO</h1>
+              <p className="text-xs text-gray-500 font-medium mt-1">{profile?.role === 'admin' ? 'Visão Geral da Empresa' : `Minhas Vendas: ${profile?.name}`}</p>
             </div>
           </div>
           
@@ -124,8 +128,8 @@ export default function Dashboard() {
                 <button
                   key={range}
                   onClick={() => setTimeRange(range)}
-                  className={`px-4 py-2 rounded-xl text-sm font-bold transition-all ${
-                    timeRange === range ? 'bg-white text-orange-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                    timeRange === range ? 'bg-white text-brand-orange shadow-sm' : 'text-gray-500 hover:text-gray-700'
                   }`}
                 >
                   {range === '7d' ? '7 DIAS' : range === '30d' ? '30 DIAS' : 'TUDO'}

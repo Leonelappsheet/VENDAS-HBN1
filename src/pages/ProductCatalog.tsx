@@ -1693,15 +1693,15 @@ export default function ProductCatalog() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FDF6F0] dark:bg-[#121212] pb-24">
-      <header className="bg-gradient-to-r from-[#FF6B00] to-[#F06292] p-4 pt-safe sticky top-0 z-40 shadow-lg">
+    <div className="min-h-screen bg-slate-50 dark:bg-[#121212] pb-24 font-sans">
+      <header className="bg-brand-blue p-4 pt-safe sticky top-0 z-40 shadow-lg border-b border-white/5">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
             {profile?.role === 'admin' && (
               <motion.button 
                 whileHover={{ scale: 1.1, backgroundColor: "rgba(255,255,255,0.3)" }}
                 whileTap={{ scale: 0.9 }}
                 onClick={() => navigate('/dashboard')} 
-                className="p-2 bg-white/20 rounded-full text-white shadow-sm"
+                className="p-2 bg-white/10 rounded-full text-white shadow-sm"
                 title="Dashboard"
               >
                 <TrendingUp size={20} />
@@ -1711,16 +1711,23 @@ export default function ProductCatalog() {
               whileHover={{ scale: 1.1, backgroundColor: "rgba(255,255,255,0.3)" }}
               whileTap={{ scale: 0.9 }}
               onClick={() => navigate('/')} 
-              className="p-2 bg-white/20 rounded-full text-white transition-colors"
+              className="p-2 bg-white/10 rounded-full text-white transition-colors"
           >
             <ChevronLeft size={24} />
           </motion.button>
-          <img src="/logo.svg" alt="Logo" className="w-8 h-8 brightness-0 invert" />
+          
+          {/* Star Logo */}
+          <div className="w-8 h-8 bg-brand-orange text-white rounded-lg flex items-center justify-center p-1.5 shadow-md shadow-brand-orange/20 shrink-0">
+            <svg viewBox="0 0 24 24" fill="currentColor" className="w-full h-full">
+              <path d="M12 .587l3.668 7.431 8.2 1.192-5.934 5.787 1.4 8.168L12 18.896l-7.334 3.857 1.4-8.168L.132 9.21l8.2-1.192L12 .587z" />
+            </svg>
+          </div>
+
           <div className="flex-1 min-w-0 text-center">
-            <h1 className="text-white font-bold text-lg truncate">
+            <h1 className="text-white font-display font-bold text-base leading-tight tracking-tight uppercase truncate">
               {profile?.role === 'promotor' ? 'Catálogo Promotor' : (selectedClient?.tradeName || selectedClient?.name)}
             </h1>
-            <p className="text-white/80 text-[10px] font-medium uppercase tracking-wider">
+            <p className="text-white/85 text-[10px] font-medium uppercase tracking-wider font-mono">
               {profile?.role === 'promotor' ? getRegionalLabel(profile?.regional) : `${selectedClient?.city} • ${selectedClient?.id}`}
             </p>
           </div>
@@ -1795,18 +1802,18 @@ export default function ProductCatalog() {
           {['produtos', 'ofertas', 'lancamentos'].map(tab => (
             <motion.button 
               key={tab} 
-              whileHover={{ backgroundColor: "rgba(255, 107, 0, 0.05)" }}
+              whileHover={{ backgroundColor: "rgba(255, 90, 0, 0.05)" }}
               onClick={() => setActiveTab(tab as any)} 
-              className={cn("flex-1 py-4 text-sm font-bold transition-all relative uppercase", activeTab === tab ? "text-orange-600" : "text-gray-400")}
+              className={cn("flex-1 py-2.5 text-xs font-display font-bold transition-all relative uppercase tracking-wider", activeTab === tab ? "text-brand-orange" : "text-slate-400")}
             >
               <div className="flex flex-col items-center gap-0.5">
                 <span>{tab === 'produtos' ? '🛍 Produtos' : tab === 'ofertas' ? '🔥 Ofertas' : '🆕 Lançamentos'}</span>
-                <span className={cn("text-[9px] font-black px-1.5 rounded-full", activeTab === tab ? "bg-orange-100 text-orange-600" : "bg-gray-100 text-gray-400")}>
+                <span className={cn("text-[9px] font-mono font-black px-1.5 rounded-full", activeTab === tab ? "bg-brand-orange/10 text-brand-orange" : "bg-slate-100 text-slate-400")}>
                   {counts.tabCounts[tab as keyof typeof counts.tabCounts]}
                 </span>
               </div>
               {activeTab === tab && (
-                <motion.div layoutId="tab-indicator" className="absolute bottom-0 left-0 right-0 h-1 bg-orange-600 rounded-full" />
+                <motion.div layoutId="tab-indicator" className="absolute bottom-0 left-0 right-0 h-1 bg-brand-orange rounded-full" />
               )}
             </motion.button>
           ))}
@@ -1997,15 +2004,15 @@ export default function ProductCatalog() {
           <div className="flex-1 w-full space-y-4">
             
             {/* Filters and search row */}
-            <div className="flex flex-col gap-4">
+            <div className="sticky top-[120px] z-20 bg-slate-50 dark:bg-[#121212] py-2.5 -mx-4 px-4 flex flex-col gap-3 transition-all">
               <div className="flex gap-2 relative">
                 <div className="relative flex-1">
                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
                   <input type="search" placeholder="Buscar por nome, código, fabricante..." value={searchInputValue} onChange={(e) => setSearchInputValue(e.target.value)}
-                    className="w-full bg-white dark:bg-[#1E1E1E] border border-gray-200 dark:border-gray-800 rounded-full py-3.5 pl-12 pr-14 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-orange-500/20 transition-all shadow-sm" />
+                    className="w-full bg-white dark:bg-[#1E1E1E] border border-gray-200 dark:border-gray-800 rounded-full py-3.5 pl-12 pr-14 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-orange/20 transition-all shadow-sm" />
                   <button 
                     onClick={() => setIsScannerOpen(true)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-orange-100 text-orange-600 rounded-full hover:bg-orange-200 transition-colors"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-brand-orange/10 text-brand-orange rounded-full hover:bg-brand-orange/20 transition-colors"
                   >
                     <Camera size={18} />
                   </button>
@@ -2017,7 +2024,7 @@ export default function ProductCatalog() {
                 >
                   <SlidersHorizontal size={18} />
                   {(selectedManufacturers.length + selectedCategories.length + statusFilters.length > 0) && (
-                    <span className="absolute -top-1 -right-1 bg-orange-600 text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-white">
+                    <span className="absolute -top-1 -right-1 bg-brand-orange text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-white">
                       {selectedManufacturers.length + selectedCategories.length + statusFilters.length}
                     </span>
                   )}
@@ -2988,9 +2995,9 @@ export default function ProductCatalog() {
         whileHover={{ scale: 1.1, rotate: 5 }}
         whileTap={{ scale: 0.9 }}
         onClick={() => setIsCartOpen(true)} 
-        className="fixed bottom-6 right-6 w-16 h-16 bg-gradient-to-br from-[#FF6B00] to-[#F06292] text-white rounded-full shadow-2xl flex items-center justify-center z-40"
+        className="fixed bottom-6 right-6 w-16 h-16 bg-brand-orange text-white rounded-full shadow-2xl shadow-brand-orange/45 flex items-center justify-center z-40 hover:bg-brand-orange-light transition-colors"
       >
-        <ShoppingCart size={28} />{cartCount > 0 && <span className="absolute -top-1 -right-1 bg-white text-orange-600 w-6 h-6 rounded-full text-xs font-black flex items-center justify-center">{cartCount}</span>}
+        <ShoppingCart size={28} />{cartCount > 0 && <span className="absolute -top-1 -right-1 bg-white text-brand-orange w-6 h-6 rounded-full text-xs font-black flex items-center justify-center shadow-md">{cartCount}</span>}
       </motion.button>
 
       {/* Advanced Filter Drawer */}

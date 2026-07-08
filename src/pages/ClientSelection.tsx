@@ -122,20 +122,23 @@ export default function ClientSelection() {
   };
 
   return (
-    <div className="min-h-screen bg-[#FDF6F0] dark:bg-[#121212] transition-colors duration-300">
+    <div className="min-h-screen bg-slate-50 dark:bg-[#121212] transition-colors duration-300 font-sans">
       {/* Header */}
-      <header className="bg-gradient-to-r from-[#FF6B00] to-[#F06292] p-4 pt-safe sticky top-0 z-50 shadow-lg">
+      <header className="bg-brand-blue p-4 pt-safe sticky top-0 z-50 shadow-lg border-b border-white/5">
         <div className="max-w-4xl mx-auto">
           <div className="flex items-center justify-between gap-4 mb-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-white/20 rounded-full overflow-hidden p-1">
-                <img src="/logo.svg" alt="Profile" className="w-full h-full object-contain brightness-0 invert" />
+              {/* Star-like logo icon */}
+              <div className="w-10 h-10 bg-brand-orange text-white rounded-xl flex items-center justify-center p-1.5 shadow-md shadow-brand-orange/20">
+                <svg viewBox="0 0 24 24" fill="currentColor" className="w-full h-full">
+                  <path d="M12 .587l3.668 7.431 8.2 1.192-5.934 5.787 1.4 8.168L12 18.896l-7.334 3.857 1.4-8.168L.132 9.21l8.2-1.192L12 .587z" />
+                </svg>
               </div>
               <div>
-                <h2 className="text-white font-bold text-sm leading-tight">
+                <h2 className="text-white font-display font-bold text-base leading-tight tracking-tight uppercase">
                   Olá, {profile?.name}
                 </h2>
-                <span className="bg-white/20 text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                <span className="bg-white/15 text-white/90 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
                   {getRegionalLabel(profile?.regional)}
                 </span>
               </div>
@@ -225,8 +228,8 @@ export default function ClientSelection() {
         
         {loading ? (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
-            <div className="w-12 h-12 border-4 border-orange-200 border-t-orange-600 rounded-full animate-spin"></div>
-            <p className="text-gray-500 dark:text-gray-400 font-medium">Carregando clientes...</p>
+            <div className="w-12 h-12 border-4 border-brand-orange/20 border-t-brand-orange rounded-full animate-spin"></div>
+            <p className="text-slate-500 dark:text-slate-400 font-medium">Carregando clientes...</p>
           </div>
         ) : filteredClients.length === 0 ? (
           <div className="text-center py-20">
@@ -258,53 +261,53 @@ export default function ClientSelection() {
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: index * 0.05 }}
                       onClick={() => setShowDetailsModal(client)}
-                      whileHover={{ scale: 1.02, backgroundColor: darkMode ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.8)" }}
-                      whileTap={{ scale: 0.98 }}
-                      className="bg-white dark:bg-[#1E1E1E] p-4 rounded-2xl shadow-sm border-2 border-transparent hover:border-orange-500 transition-all cursor-pointer flex items-start gap-4 group"
+                      whileHover={{ scale: 1.01, backgroundColor: darkMode ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.8)" }}
+                      whileTap={{ scale: 0.99 }}
+                      className="bg-white dark:bg-[#1E1E1E] p-4 rounded-2xl shadow-sm border-2 border-transparent hover:border-brand-orange transition-all cursor-pointer flex items-start gap-4 group"
                     >
-                      <div className="w-12 h-12 bg-orange-50 dark:bg-orange-900/20 rounded-xl flex items-center justify-center text-orange-600 shrink-0 relative overflow-hidden">
+                      <div className="w-12 h-12 bg-brand-orange/5 dark:bg-brand-orange/10 rounded-xl flex items-center justify-center text-brand-orange shrink-0 relative overflow-hidden">
                         {client.photo ? (
                           <img src={client.photo} alt={client.tradeName || client.name} className="w-full h-full object-cover" />
                         ) : (
-                          <Store size={24} />
+                          <Store size={22} />
                         )}
                         {hasCart && (
-                          <div className="absolute -top-1 -right-1 w-5 h-5 bg-orange-500 text-white rounded-full flex items-center justify-center shadow-lg animate-pulse z-10" title="Venda Iniciada">
-                            <ShoppingCart size={12} />
+                          <div className="absolute -top-1 -right-1 w-5 h-5 bg-brand-orange text-white rounded-full flex items-center justify-center shadow-lg animate-pulse z-10" title="Venda Iniciada">
+                            <ShoppingCart size={11} />
                           </div>
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <h3 className="font-bold text-gray-900 dark:text-white truncate">
+                          <h3 className="font-display font-bold text-slate-900 dark:text-white truncate text-base">
                             {client.tradeName || client.name}
                           </h3>
                           {hasCart && (
-                            <span className="bg-orange-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0 animate-in fade-in zoom-in">
-                              <ShoppingCart size={10} /> {itemCount} item(s)
+                            <span className="bg-brand-orange text-white text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0 animate-in fade-in zoom-in">
+                              <ShoppingCart size={10} /> {itemCount}
                             </span>
                           )}
                         </div>
                     {client.tradeName && client.name !== client.tradeName && (
-                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{client.name}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{client.name}</p>
                     )}
                     {client.address && (
-                      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-1">
-                        <MapPin size={12} className="text-gray-400 shrink-0" />
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 flex items-center gap-1">
+                        <MapPin size={12} className="text-slate-400 shrink-0" />
                         <span className="truncate">{client.address}</span>
                       </p>
                     )}
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-md">
+                    <div className="flex flex-wrap gap-1.5 mt-2.5">
+                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-brand-blue/5 dark:bg-brand-blue/20 text-brand-blue dark:text-brand-blue-light rounded-md">
                         ID {client.id}
                       </span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-orange-50 dark:bg-orange-900/20 text-orange-600 rounded-md">
+                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-brand-orange/5 dark:bg-brand-orange/20 text-brand-orange rounded-md">
                         {client.cnpj}
                       </span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-purple-50 dark:bg-purple-900/20 text-purple-600 rounded-md">
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-md">
                         {client.seller}
                       </span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-green-50 dark:bg-green-900/20 text-green-600 rounded-md">
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 rounded-md">
                         {client.city}
                       </span>
                     </div>
@@ -315,7 +318,7 @@ export default function ClientSelection() {
                         e.stopPropagation();
                         setShowVisitModal(client);
                       }}
-                      className="p-2 bg-orange-50 dark:bg-orange-900/20 text-orange-600 rounded-full hover:bg-orange-100 transition-colors"
+                      className="p-2 bg-brand-orange/5 dark:bg-brand-orange/10 text-brand-orange rounded-full hover:bg-brand-orange/10 transition-colors"
                       title="Registrar Visita"
                     >
                       <Calendar size={18} />
@@ -615,7 +618,7 @@ export default function ClientSelection() {
               className="bg-white dark:bg-[#1E1E1E] rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl flex flex-col my-8"
             >
               {/* Header with gradient or cover */}
-              <div className="relative p-6 bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white flex flex-col items-center pt-10">
+              <div className="relative p-6 bg-brand-blue text-white flex flex-col items-center pt-10">
                 <button 
                   onClick={() => setShowDetailsModal(null)}
                   className="absolute right-4 top-4 w-8 h-8 bg-white/20 hover:bg-white/30 text-white rounded-full flex items-center justify-center transition-colors"
@@ -634,7 +637,7 @@ export default function ClientSelection() {
                   </div>
                   
                   {/* Edit/Upload trigger */}
-                  <label className="absolute bottom-0 right-0 p-2 bg-orange-600 text-white rounded-full shadow-lg border-2 border-white cursor-pointer hover:bg-orange-700 transition-colors flex items-center justify-center">
+                  <label className="absolute bottom-0 right-0 p-2 bg-brand-orange text-white rounded-full shadow-lg border-2 border-white cursor-pointer hover:bg-brand-orange-light transition-colors flex items-center justify-center">
                     <Camera size={16} />
                     <input 
                       type="file" 
@@ -645,13 +648,13 @@ export default function ClientSelection() {
                   </label>
                 </div>
 
-                <h3 className="font-black text-xl text-center leading-tight">
+                <h3 className="font-display font-black text-xl text-center leading-tight">
                   {showDetailsModal.tradeName || showDetailsModal.name}
                 </h3>
                 {showDetailsModal.tradeName && showDetailsModal.name !== showDetailsModal.tradeName && (
                   <p className="text-xs opacity-90 text-center mt-1 font-medium">{showDetailsModal.name}</p>
                 )}
-                <span className="bg-white/20 text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-wider mt-3">
+                <span className="bg-white/20 text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-wider mt-3 font-mono">
                   Código: {showDetailsModal.id}
                 </span>
               </div>
@@ -660,67 +663,67 @@ export default function ClientSelection() {
               <div className="p-6 space-y-4 max-h-[50vh] overflow-y-auto">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {showDetailsModal.cnpj && (
-                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl">
-                      <p className="text-[10px] text-gray-400 font-bold uppercase">CNPJ / CPF</p>
-                      <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.cnpj}</p>
+                    <div className="bg-slate-50 dark:bg-gray-800/40 p-3 rounded-2xl">
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">CNPJ / CPF</p>
+                      <p className="text-xs font-mono font-bold text-slate-900 dark:text-white mt-0.5">{showDetailsModal.cnpj}</p>
                     </div>
                   )}
 
                   {showDetailsModal.phone && (
-                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl flex items-center gap-3">
-                      <div className="p-2 bg-green-50 dark:bg-green-900/20 text-green-600 rounded-xl">
+                    <div className="bg-slate-50 dark:bg-gray-800/40 p-3 rounded-2xl flex items-center gap-3">
+                      <div className="p-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 rounded-xl">
                         <Phone size={14} />
                       </div>
                       <div className="flex-1">
-                        <p className="text-[10px] text-gray-400 font-bold uppercase">Telefone</p>
-                        <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.phone}</p>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Telefone</p>
+                        <p className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">{showDetailsModal.phone}</p>
                       </div>
                     </div>
                   )}
 
                   {showDetailsModal.email && (
-                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl flex items-center gap-3 col-span-1 sm:col-span-2">
+                    <div className="bg-slate-50 dark:bg-gray-800/40 p-3 rounded-2xl flex items-center gap-3 col-span-1 sm:col-span-2">
                       <div className="p-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 rounded-xl">
                         <Mail size={14} />
                       </div>
                       <div className="flex-1">
-                        <p className="text-[10px] text-gray-400 font-bold uppercase">Email</p>
-                        <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5 break-all">{showDetailsModal.email}</p>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Email</p>
+                        <p className="text-xs font-bold text-slate-900 dark:text-white mt-0.5 break-all">{showDetailsModal.email}</p>
                       </div>
                     </div>
                   )}
 
                   {showDetailsModal.buyer && (
-                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl col-span-1 sm:col-span-2">
-                      <p className="text-[10px] text-gray-400 font-bold uppercase">Comprador / Contato</p>
-                      <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.buyer}</p>
+                    <div className="bg-slate-50 dark:bg-gray-800/40 p-3 rounded-2xl col-span-1 sm:col-span-2">
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Comprador / Contato</p>
+                      <p className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">{showDetailsModal.buyer}</p>
                     </div>
                   )}
 
                   {showDetailsModal.address && (
-                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl flex items-start gap-3 col-span-1 sm:col-span-2">
-                      <div className="p-2 bg-orange-50 dark:bg-orange-900/20 text-orange-600 rounded-xl mt-0.5">
+                    <div className="bg-slate-50 dark:bg-gray-800/40 p-3 rounded-2xl flex items-start gap-3 col-span-1 sm:col-span-2">
+                      <div className="p-2 bg-brand-orange/10 text-brand-orange rounded-xl mt-0.5">
                         <MapPin size={14} />
                       </div>
                       <div className="flex-1">
-                        <p className="text-[10px] text-gray-400 font-bold uppercase">Endereço</p>
-                        <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.address}</p>
-                        <p className="text-[11px] text-gray-500 mt-0.5">{showDetailsModal.city} - {showDetailsModal.state}</p>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Endereço</p>
+                        <p className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">{showDetailsModal.address}</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{showDetailsModal.city} - {showDetailsModal.state}</p>
                       </div>
                     </div>
                   )}
 
                   {showDetailsModal.seller && (
-                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl">
-                      <p className="text-[10px] text-gray-400 font-bold uppercase">Vendedor Responsável</p>
-                      <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{showDetailsModal.seller}</p>
+                    <div className="bg-slate-50 dark:bg-gray-800/40 p-3 rounded-2xl">
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Vendedor Responsável</p>
+                      <p className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">{showDetailsModal.seller}</p>
                     </div>
                   )}
 
                   {showDetailsModal.regional && (
-                    <div className="bg-gray-50 dark:bg-gray-800/40 p-3 rounded-2xl">
-                      <p className="text-[10px] text-gray-400 font-bold uppercase">Regional</p>
-                      <p className="text-xs font-bold text-gray-900 dark:text-white mt-0.5">{getRegionalLabel(showDetailsModal.regional)}</p>
+                    <div className="bg-slate-50 dark:bg-gray-800/40 p-3 rounded-2xl">
+                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Regional</p>
+                      <p className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">{getRegionalLabel(showDetailsModal.regional)}</p>
                     </div>
                   )}
                 </div>
@@ -743,7 +746,7 @@ export default function ClientSelection() {
                     handleSelectClient(showDetailsModal);
                     setShowDetailsModal(null);
                   }}
-                  className="flex-1 py-3 bg-gradient-to-r from-orange-500 to-pink-500 text-white font-black rounded-xl shadow-lg shadow-orange-500/25 flex items-center justify-center gap-2"
+                  className="flex-1 py-3 bg-brand-orange hover:bg-brand-orange-light text-white font-black rounded-xl shadow-lg shadow-brand-orange/25 flex items-center justify-center gap-2"
                 >
                   <ShoppingCart size={18} /> Fazer Pedido
                 </motion.button>
