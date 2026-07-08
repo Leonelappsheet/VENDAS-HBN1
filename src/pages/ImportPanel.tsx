@@ -940,9 +940,29 @@ export default function ImportPanel() {
     const contactInfoFooter = `${profile?.regional ? getRegionalLabel(profile.regional) : 'TIMON-MA'} | Tel: ${profile?.phone || '(86) 99964-7573'} | ${profile?.email || 'leonelamorimm@gmail.com'}`;
     doc.text(`Obrigado pela preferencia! | VENDAS HBN1 | ${contactInfoFooter} | Emitido em: ${new Date().toLocaleString('pt-BR')}`, 105, 290, { align: 'center' });
 
-    const rawName = res.clientName || 'N/A';
-    const cleanName = rawName.split('Fornecedor:')[0]?.trim() || rawName;
-    doc.save(`Pedido_${cleanName.replace(/\s+/g, '_')}.pdf`);
+    const rName = res.client?.name || res.clientName || 'CLIENTE';
+    const cleanRName = rName.split('Fornecedor:')[0]?.trim() || rName;
+    const cleanRNameCleaned = cleanRName
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .toUpperCase();
+
+    const rawCnpj = res.cnpj || res.client?.cnpj || '';
+    const cleanCnpjStr = rawCnpj.replace(/\D/g, '');
+
+    const orderDate = new Date(); // Use current date for downloaded imported files
+    const dayStr = String(orderDate.getDate()).padStart(2, '0');
+    const monthStr = String(orderDate.getMonth() + 1).padStart(2, '0');
+    const yearStr = String(orderDate.getFullYear());
+    const hourStr = String(orderDate.getHours()).padStart(2, '0');
+    const minStr = String(orderDate.getMinutes()).padStart(2, '0');
+    const secStr = String(orderDate.getSeconds()).padStart(2, '0');
+
+    const dateAndTimeStr = `${dayStr}${monthStr}${yearStr}${hourStr}${minStr}${secStr}`;
+    const formattedFilename = `${cleanRNameCleaned}${cleanCnpjStr}${dateAndTimeStr}.pdf`;
+
+    doc.save(formattedFilename);
   };
 
 
@@ -1119,9 +1139,31 @@ export default function ImportPanel() {
       const wbout = XLSXStyle.write(wb, { bookType: 'xlsx', type: 'array' });
       const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = window.URL.createObjectURL(blob);
+      const rName = res.client?.name || res.clientName || 'CLIENTE';
+      const cleanRName = rName.split('Fornecedor:')[0]?.trim() || rName;
+      const cleanRNameCleaned = cleanRName
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9]/g, '')
+        .toUpperCase();
+
+      const rawCnpj = res.cnpj || res.client?.cnpj || '';
+      const cleanCnpjStr = rawCnpj.replace(/\D/g, '');
+
+      const orderDate = new Date(); // Use current date for downloaded imported files
+      const dayStr = String(orderDate.getDate()).padStart(2, '0');
+      const monthStr = String(orderDate.getMonth() + 1).padStart(2, '0');
+      const yearStr = String(orderDate.getFullYear());
+      const hourStr = String(orderDate.getHours()).padStart(2, '0');
+      const minStr = String(orderDate.getMinutes()).padStart(2, '0');
+      const secStr = String(orderDate.getSeconds()).padStart(2, '0');
+
+      const dateAndTimeStr = `${dayStr}${monthStr}${yearStr}${hourStr}${minStr}${secStr}`;
+      const formattedFilename = `${cleanRNameCleaned}${cleanCnpjStr}${dateAndTimeStr}.xlsx`;
+
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Pedido_${cleanName.substring(0, 20).replace(/\s+/g, '_')}.xlsx`;
+      a.download = formattedFilename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

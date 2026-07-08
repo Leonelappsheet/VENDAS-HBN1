@@ -293,7 +293,28 @@ export default function AdminPanel() {
     const ws = XLSX.utils.aoa_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Pedido');
-    XLSX.writeFile(wb, `Pedido_${order.id}.xlsx`);
+
+    const rName = client?.name || order.clientName || 'CLIENTE';
+    const cleanRName = rName
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .toUpperCase();
+
+    const cleanCnpjStr = (client?.cnpj || '').replace(/\D/g, '');
+
+    const orderDate = order.date ? new Date(order.date) : new Date();
+    const dayStr = String(orderDate.getDate()).padStart(2, '0');
+    const monthStr = String(orderDate.getMonth() + 1).padStart(2, '0');
+    const yearStr = String(orderDate.getFullYear());
+    const hourStr = String(orderDate.getHours()).padStart(2, '0');
+    const minStr = String(orderDate.getMinutes()).padStart(2, '0');
+    const secStr = String(orderDate.getSeconds()).padStart(2, '0');
+
+    const dateAndTimeStr = `${dayStr}${monthStr}${yearStr}${hourStr}${minStr}${secStr}`;
+    const formattedFilename = `${cleanRName}${cleanCnpjStr}${dateAndTimeStr}.xlsx`;
+
+    XLSX.writeFile(wb, formattedFilename);
     toast.success('Excel gerado com sucesso!');
   };
 

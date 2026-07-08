@@ -1180,7 +1180,28 @@ export default function ProductCatalog() {
     doc.text(footerText, pageWidth / 2, footerY, { align: 'center' });
     doc.text(`Emitido em: ${new Date().toLocaleString('pt-BR')}`, pageWidth / 2, footerY + 5, { align: 'center' });
 
-    doc.save(`Pedido_${order.id}.pdf`);
+    // Format filename with legal name (razão social), cnpj, date, and time
+    const rName = selectedClient?.name || order.clientName || 'CLIENTE';
+    const cleanRName = rName
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .toUpperCase();
+
+    const cleanCnpjStr = (selectedClient?.cnpj || '').replace(/\D/g, '');
+
+    const orderDate = order.date ? new Date(order.date) : new Date();
+    const dayStr = String(orderDate.getDate()).padStart(2, '0');
+    const monthStr = String(orderDate.getMonth() + 1).padStart(2, '0');
+    const yearStr = String(orderDate.getFullYear());
+    const hourStr = String(orderDate.getHours()).padStart(2, '0');
+    const minStr = String(orderDate.getMinutes()).padStart(2, '0');
+    const secStr = String(orderDate.getSeconds()).padStart(2, '0');
+
+    const dateAndTimeStr = `${dayStr}${monthStr}${yearStr}${hourStr}${minStr}${secStr}`;
+    const formattedFilename = `${cleanRName}${cleanCnpjStr}${dateAndTimeStr}.pdf`;
+
+    doc.save(formattedFilename);
   };
 
   const exportCatalogToPDF = async () => {
@@ -1650,9 +1671,29 @@ export default function ProductCatalog() {
     const buffer = await workbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = window.URL.createObjectURL(blob);
+    const rName = selectedClient?.name || order.clientName || 'CLIENTE';
+    const cleanRName = rName
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .toUpperCase();
+
+    const cleanCnpjStr = (selectedClient?.cnpj || '').replace(/\D/g, '');
+
+    const orderDate = order.date ? new Date(order.date) : new Date();
+    const dayStr = String(orderDate.getDate()).padStart(2, '0');
+    const monthStr = String(orderDate.getMonth() + 1).padStart(2, '0');
+    const yearStr = String(orderDate.getFullYear());
+    const hourStr = String(orderDate.getHours()).padStart(2, '0');
+    const minStr = String(orderDate.getMinutes()).padStart(2, '0');
+    const secStr = String(orderDate.getSeconds()).padStart(2, '0');
+
+    const dateAndTimeStr = `${dayStr}${monthStr}${yearStr}${hourStr}${minStr}${secStr}`;
+    const formattedFilename = `${cleanRName}${cleanCnpjStr}${dateAndTimeStr}.xlsx`;
+
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `Pedido_${order.id || 'Novo'}.xlsx`;
+    anchor.download = formattedFilename;
     anchor.click();
     window.URL.revokeObjectURL(url);
   };
