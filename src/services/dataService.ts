@@ -223,7 +223,14 @@ async function fetchDirectlyFromGoogleSheets(sheetName: string, customSpreadshee
           const colName = cols[idx];
           if (colName) {
             if (cell) {
-              rowObj[colName] = cell.v !== undefined ? cell.v : null;
+              let val = cell.v !== undefined ? cell.v : null;
+              // Gviz Type Coercion Bugfix:
+              // If cell.v is a Date string from Gviz like "Date(2026,0,7)" but cell.f is a string like "07.01" or "07/01/2026",
+              // we must prefer the formatted string cell.f to avoid invalid prices, stock, or date parsing failures.
+              if (cell.f !== undefined && cell.v !== undefined && typeof cell.v === 'string' && cell.v.startsWith('Date(')) {
+                val = cell.f;
+              }
+              rowObj[colName] = val;
             } else {
               rowObj[colName] = null;
             }
