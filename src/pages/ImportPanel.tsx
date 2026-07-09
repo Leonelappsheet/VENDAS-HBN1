@@ -20,7 +20,9 @@ import {
   Package,
   ListPlus,
   ClipboardList,
-  Trash2
+  Trash2,
+  Plus,
+  Minus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn, formatCurrency, normalizeEAN } from '../lib/utils';
@@ -420,6 +422,9 @@ export default function ImportPanel() {
               // B. A7 Pharma Unidade header
               const unidadeMatch = pageText.match(/Unidade:\s*(.*?)(?=Usuário:|CNPJ:|$)/i);
               
+              // C. INOVAFARMA header
+              const inovafarmaMatch = pageText.match(/Razão\s+Social:\s*([^\n]+)/i);
+              
               let clientObj: any = null;
               
               if (filialMatch) {
@@ -480,6 +485,52 @@ export default function ImportPanel() {
                     cotacao: cotacaoMatch ? cotacaoMatch[1].trim() : ''
                   }
                 };
+              } else if (inovafarmaMatch) {
+                let name = inovafarmaMatch[1].trim();
+                const truncateKeywords = [
+                  'CNPJ', 'Nome Fantasia', 'Nome', 'Endereço', 'Endereco', 'IE:', 'Telefone'
+                ];
+                truncateKeywords.forEach(kw => {
+                  const idx = name.toLowerCase().indexOf(kw.toLowerCase());
+                  if (idx !== -1) {
+                    name = name.substring(0, idx).trim();
+                  }
+                });
+                name = name.replace(/[\s\-–—]+$/, '').trim();
+
+                let cnpj = '';
+                const cnpjMatch = pageText.match(/CNPJ:\s*([\d\.\/\-]+)/i);
+                if (cnpjMatch) {
+                  cnpj = cnpjMatch[1].trim().replace(/[^\d]/g, '');
+                }
+
+                const obsMatch = pageText.match(/Observação:\s*([^\n]+)/i) || pageText.match(/Observacao:\s*([^\n]+)/i);
+                let fornecedor = obsMatch ? obsMatch[1].trim() : '';
+                if (fornecedor) {
+                  const truncKw = ['Pedido', 'Data', 'Nome'];
+                  truncKw.forEach(kw => {
+                    const idx = fornecedor.toLowerCase().indexOf(kw.toLowerCase());
+                    if (idx !== -1) {
+                      fornecedor = fornecedor.substring(0, idx).trim();
+                    }
+                  });
+                }
+                if (!fornecedor) fornecedor = 'INOVAFARMA';
+
+                const pedidoMatch = pageText.match(/Pedido\s*(?:nº|no|num)?:\s*(\d+)/i);
+
+                clientObj = {
+                  clientName: name,
+                  cnpj: cnpj,
+                  items: [],
+                  headerInfo: {
+                    fornecedor: fornecedor,
+                    condPgto: '',
+                    status: 'Pendente',
+                    dataEntrega: '',
+                    cotacao: pedidoMatch ? `Pedido #${pedidoMatch[1]}` : 'INOVAFARMA'
+                  }
+                };
               }
               
               // Handle context carry over or fallback
@@ -532,10 +583,26 @@ export default function ImportPanel() {
               // Pattern C: Standard generic product regex
               const productRegexNormal = /(\d{8,14})\s+([^\n]*?)\s+([\d\.]+)\s+([\d\.]+,\d{2})/;
               
+              // Pattern D: INOVAFARMA format
+              // Example: 2296901 7891150037465 440507 COND SEDA 325ML CACHOS DEFINIDOS UNILEVER DO BRASIL 0 6 11,51 69,06
+              // Example without supplier code: 2297201 7891150037328 COND SEDA 325ML LISO PERFEITO UNILEVER DO BRASIL 0 6 7,21 43,26
+              const inovafarmaProdRegex = /^(\d+)\s+(\d{13})\s+(?:(\d{4,8})\s+)?(.*?)\s+([\s\-]?\d+)\s+(\d+)\s+([\d\.]+,\d{2})\s+([\d\.]+,\d{2})$/;
+              
               pageLines.forEach((line) => {
                 const trimmedLine = line.trim();
                 
-                // Let's test Nazaria first
+                // 1. Let's test INOVAFARMA product format FIRST to prevent greedy fallback matchers (like productRegexNormal matching on internal customer codes)
+                const inovafarmaMatchRow = trimmedLine.match(inovafarmaProdRegex);
+                if (inovafarmaMatchRow) {
+                  const ean = normalizeEAN(inovafarmaMatchRow[2]);
+                  const desc = inovafarmaMatchRow[4].trim();
+                  const quantity = parseInt(inovafarmaMatchRow[6]);
+                  const priceVal = parseFloat(inovafarmaMatchRow[7].replace(/\./g, '').replace(',', '.'));
+                  pageProductsFound.push({ ean, desc, quantity, price: priceVal });
+                  return;
+                }
+
+                // 2. Let's test Nazaria
                 const nazariaMatch = trimmedLine.match(nazariaProdRegex);
                 if (nazariaMatch) {
                   const ean = normalizeEAN(nazariaMatch[1]);
@@ -545,7 +612,7 @@ export default function ImportPanel() {
                   return;
                 }
                 
-                // Next, let's test percent format
+                // 3. Next, let's test percent format
                 const percentMatch = trimmedLine.match(productRegexPercent);
                 if (percentMatch) {
                   const ean = normalizeEAN(percentMatch[1]);
@@ -570,7 +637,7 @@ export default function ImportPanel() {
                   return;
                 }
                 
-                // Next, let's test normal product format
+                // 4. Next, let's test normal product format
                 const normalMatch = trimmedLine.match(productRegexNormal);
                 if (normalMatch) {
                   const ean = normalizeEAN(normalMatch[1]);
@@ -1626,6 +1693,20 @@ export default function ImportPanel() {
     setCheckedItems(newChecked);
   };
 
+  const updateItemQuantity = (clientIdx: number, itemIdx: number, newQty: number) => {
+    if (newQty < 1) return;
+    setResults(prev => prev.map((res, cIdx) => {
+      if (cIdx !== clientIdx) return res;
+      return {
+        ...res,
+        items: res.items.map((item: any, iIdx: number) => {
+          if (iIdx !== itemIdx) return item;
+          return { ...item, quantity: newQty };
+        })
+      };
+    }));
+  };
+
   const financialSummary = useMemo(() => {
     let subtotal = 0;
     let noStock = 0;
@@ -2205,9 +2286,55 @@ export default function ImportPanel() {
                               )}
                             </div>
 
-                            <div className="text-right">
-                              <span className="text-xs font-bold text-gray-400 uppercase">Qtd:</span>
-                              <span className="text-lg font-black text-gray-900 dark:text-white ml-1">{item.quantity}</span>
+                            <div className="flex flex-col items-end gap-1 shrink-0">
+                              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Qtd:</span>
+                              <div className="flex items-center gap-1 bg-gray-50 dark:bg-gray-800 rounded-xl p-1 shadow-sm border border-gray-200/50 dark:border-gray-700/50">
+                                <motion.button
+                                  whileHover={{ scale: 1.1 }}
+                                  whileTap={{ scale: 0.95 }}
+                                  onClick={() => {
+                                    const currentQty = item.quantity || 1;
+                                    if (currentQty > 1) {
+                                      updateItemQuantity(clientIdx, itemIdx, currentQty - 1);
+                                    }
+                                  }}
+                                  disabled={(item.quantity || 1) <= 1}
+                                  className={cn(
+                                    "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
+                                    (item.quantity || 1) <= 1 
+                                      ? "text-gray-300 dark:text-gray-600 cursor-not-allowed" 
+                                      : "text-red-500 hover:bg-white dark:hover:bg-gray-700"
+                                  )}
+                                >
+                                  <Minus size={14} />
+                                </motion.button>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
+                                  value={item.quantity}
+                                  onChange={(e) => {
+                                    const val = parseInt(e.target.value);
+                                    if (!isNaN(val) && val >= 1) {
+                                      updateItemQuantity(clientIdx, itemIdx, val);
+                                    } else if (e.target.value === '') {
+                                      updateItemQuantity(clientIdx, itemIdx, 1);
+                                    }
+                                  }}
+                                  className="w-10 text-center font-black text-sm bg-transparent border-none outline-none focus:outline-none focus:ring-0 p-0 text-gray-900 dark:text-white"
+                                />
+                                <motion.button
+                                  whileHover={{ scale: 1.1 }}
+                                  whileTap={{ scale: 0.95 }}
+                                  onClick={() => {
+                                    const currentQty = item.quantity || 1;
+                                    updateItemQuantity(clientIdx, itemIdx, currentQty + 1);
+                                  }}
+                                  className="w-8 h-8 text-green-500 hover:bg-white dark:hover:bg-gray-700 rounded-lg flex items-center justify-center transition-colors"
+                                >
+                                  <Plus size={14} />
+                                </motion.button>
+                              </div>
                             </div>
                           </div>
                         );
@@ -2322,91 +2449,91 @@ export default function ImportPanel() {
                 ))}
               </div>
 
-              {/* Global Financial Summary - Matches Image 3 with large border and rounded font */}
-              <div className="bg-white dark:bg-[#1E1E1E] rounded-[3.5rem] p-10 shadow-2xl border-[10px] border-[#FF6B00] relative overflow-hidden">
-                <div className="absolute top-0 right-0 w-64 h-64 bg-orange-500/10 rounded-full -mr-32 -mt-32" />
+              {/* Global Financial Summary - Redesigned to be slim, clean and elegant */}
+              <div className="bg-white dark:bg-[#1E1E1E] rounded-3xl p-6 md:p-8 shadow-xl border-2 border-orange-500/30 relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/5 rounded-full -mr-16 -mt-16 pointer-events-none" />
                 
-                <h3 className="text-[2.5rem] font-black italic uppercase tracking-tighter flex items-center gap-4 mb-12 font-display leading-none">
-                  <span className="text-3xl">📄</span> 
-                  <span className="bg-gradient-to-r from-[#FF6B00] to-[#F06292] bg-clip-text text-transparent">TOTAL GERAL – {results.length} pedidos</span>
+                <h3 className="text-xl md:text-2xl font-extrabold tracking-tight flex items-center gap-2 mb-6 font-display leading-none">
+                  <span className="text-xl">📄</span> 
+                  <span className="bg-gradient-to-r from-[#FF6B00] to-[#F06292] bg-clip-text text-transparent uppercase">TOTAL GERAL – {results.length} pedidos</span>
                 </h3>
 
-                <div className="space-y-10">
-                  <div className="flex justify-between items-center px-4">
-                    <span className="font-bold text-gray-400 text-2xl uppercase tracking-widest font-display">Subtotal</span>
-                    <span className="font-black text-gray-900 dark:text-white text-3xl">{formatCurrency(financialSummary.subtotal)}</span>
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center px-2">
+                    <span className="font-bold text-gray-400 text-sm uppercase tracking-wider font-display">Subtotal</span>
+                    <span className="font-black text-gray-900 dark:text-white text-lg">{formatCurrency(financialSummary.subtotal)}</span>
                   </div>
                   
-                  <div className="flex justify-between items-center px-4">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-3 bg-red-500 rounded-full shadow-[0_0_10px_rgba(239,68,68,0.5)]" />
-                      <span className="font-bold text-red-500 text-2xl uppercase tracking-widest font-display">Sem Estoque</span>
+                  <div className="flex justify-between items-center px-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-6 h-2 bg-red-500 rounded-full shadow-[0_0_6px_rgba(239,68,68,0.4)]" />
+                      <span className="font-bold text-red-500 text-sm uppercase tracking-wider font-display">Sem Estoque</span>
                     </div>
-                    <span className="font-black text-red-500 text-3xl">{formatCurrency(financialSummary.noStock)}</span>
+                    <span className="font-black text-red-500 text-lg">{formatCurrency(financialSummary.noStock)}</span>
                   </div>
 
-                  <div className="flex justify-between items-center px-4">
-                    <div className="flex items-center gap-4">
-                      <div className="w-12 h-3 bg-green-500 rounded-full shadow-[0_0_10px_rgba(34,197,94,0.5)]" />
-                      <span className="font-bold text-green-500 text-2xl uppercase tracking-widest font-display">Descontos</span>
+                  <div className="flex justify-between items-center px-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-6 h-2 bg-green-500 rounded-full shadow-[0_0_6px_rgba(34,197,94,0.4)]" />
+                      <span className="font-bold text-green-500 text-sm uppercase tracking-wider font-display">Descontos</span>
                     </div>
-                    <span className="font-black text-green-500 text-3xl">- {formatCurrency(financialSummary.discount)}</span>
+                    <span className="font-black text-green-500 text-lg">- {formatCurrency(financialSummary.discount)}</span>
                   </div>
                   
-                  <div className="pt-10 border-t-2 border-gray-100 dark:border-gray-800 flex flex-col md:flex-row justify-between items-center gap-6">
+                  <div className="pt-6 mt-4 border-t border-gray-100 dark:border-gray-800 flex flex-col sm:flex-row justify-between items-center gap-4">
                     <div className="flex items-center gap-3">
-                      <div className="w-16 h-16 bg-orange-100 dark:bg-orange-900/40 rounded-3xl flex items-center justify-center text-orange-600 shadow-lg">
-                        <ShoppingCart size={32} />
+                      <div className="w-12 h-12 bg-orange-100 dark:bg-orange-950/40 rounded-2xl flex items-center justify-center text-orange-600 shadow-sm">
+                        <ShoppingCart size={24} />
                       </div>
-                      <span className="text-3xl font-black text-[#FF6B00] uppercase tracking-tighter italic font-display">Total Geral Estimado</span>
+                      <span className="text-lg font-black text-[#FF6B00] uppercase tracking-tight italic font-display">Total Geral Estimado</span>
                     </div>
-                    <div className="bg-[#FFF5F0] dark:bg-orange-900/10 px-16 py-8 rounded-[3rem] border-2 border-[#FFE0D1] dark:border-orange-900/20 shadow-inner flex items-center justify-center min-w-[300px]">
-                      <span className="text-7xl font-black text-[#FF6B00] drop-shadow-sm">{formatCurrency(financialSummary.total)}</span>
+                    <div className="bg-[#FFF5F0] dark:bg-orange-950/20 px-6 py-3 rounded-2xl border border-[#FFE0D1] dark:border-orange-900/20 shadow-inner flex items-center justify-center min-w-[200px]">
+                      <span className="text-3xl font-black text-[#FF6B00] drop-shadow-xs">{formatCurrency(financialSummary.total)}</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="mt-14 flex flex-col lg:flex-row items-center justify-between gap-8">
+                <div className="mt-8 pt-6 border-t border-gray-100 dark:border-gray-800 flex flex-col md:flex-row items-center justify-between gap-4">
                   <button 
                     onClick={() => {
                       setResults([]);
                       toast.success('Importação cancelada.');
                     }}
-                    className="order-4 lg:order-1 text-gray-400 hover:text-red-500 font-black uppercase tracking-widest text-xs transition-all hover:scale-105"
+                    className="order-4 md:order-1 text-gray-400 hover:text-red-500 font-bold uppercase tracking-wider text-[11px] transition-colors py-2"
                   >
                     CANCELAR IMPORTAÇÃO
                   </button>
                   
-                  <div className="order-2 lg:order-2 flex gap-4 w-full lg:w-auto">
+                  <div className="order-2 md:order-2 flex gap-3 w-full md:w-auto">
                     <motion.button 
-                      whileHover={{ y: -4 }}
-                      whileTap={{ scale: 0.95 }}
+                      whileHover={{ y: -2 }}
+                      whileTap={{ scale: 0.98 }}
                       onClick={exportAllOrdersToExcel}
-                      className="flex-1 lg:flex-none px-8 py-5 bg-white dark:bg-gray-800 border-2 border-gray-100 dark:border-gray-700 rounded-2xl font-black flex items-center justify-center gap-3 text-gray-500 hover:bg-gray-50 transition-all shadow-sm group"
+                      className="flex-1 md:flex-none px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl font-bold flex items-center justify-center gap-2 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm text-xs group"
                     >
-                      <Download size={20} className="group-hover:scale-110 transition-transform" />
-                      <span className="uppercase text-xs tracking-widest">EXCEL GERAL</span>
+                      <Download size={16} className="group-hover:scale-110 transition-transform" />
+                      <span className="uppercase tracking-wider">EXCEL GERAL</span>
                     </motion.button>
                     
                     <motion.button 
-                      whileHover={{ y: -4 }}
-                      whileTap={{ scale: 0.95 }}
+                      whileHover={{ y: -2 }}
+                      whileTap={{ scale: 0.98 }}
                       onClick={exportAllOrdersToPDF}
-                      className="flex-1 lg:flex-none px-8 py-5 bg-white dark:bg-gray-800 border-2 border-gray-100 dark:border-gray-700 rounded-2xl font-black flex items-center justify-center gap-3 text-gray-500 hover:bg-gray-50 transition-all shadow-sm group"
+                      className="flex-1 md:flex-none px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl font-bold flex items-center justify-center gap-2 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm text-xs group"
                     >
-                      <Download size={20} className="group-hover:scale-110 transition-transform" />
-                      <span className="uppercase text-xs tracking-widest">PDF GERAL</span>
+                      <Download size={16} className="group-hover:scale-110 transition-transform" />
+                      <span className="uppercase tracking-wider">PDF GERAL</span>
                     </motion.button>
                   </div>
 
                   <motion.button 
-                    whileHover={{ scale: 1.05, shadow: "0 25px 50px rgba(255,107,0,0.4)" }}
-                    whileTap={{ scale: 0.95 }}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
                     onClick={handleMakeAllOrders}
                     disabled={isProcessing}
-                    className="order-1 lg:order-3 w-full lg:w-auto bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white px-12 py-7 rounded-[2.5rem] font-black text-2xl shadow-[0_20px_40px_rgba(255,107,0,0.3)] flex items-center justify-center gap-4 group border-b-4 border-black/10 disabled:opacity-50"
+                    className="order-1 md:order-3 w-full md:w-auto bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white px-6 py-3.5 rounded-xl font-extrabold text-sm shadow-md flex items-center justify-center gap-2 group disabled:opacity-50"
                   >
-                    {isProcessing ? <RefreshCw className="animate-spin" size={32} /> : <Sparkles size={32} className="group-hover:rotate-12 transition-transform" />}
+                    {isProcessing ? <RefreshCw className="animate-spin" size={18} /> : <Sparkles size={18} className="group-hover:rotate-12 transition-transform" />}
                     <span>FAZER TODOS OS PEDIDOS</span>
                   </motion.button>
                 </div>
