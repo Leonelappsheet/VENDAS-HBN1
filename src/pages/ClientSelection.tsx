@@ -13,7 +13,7 @@ import { getRegionalLabel } from '../constants/regionals';
 import { ConfigWarning } from '../components/ConfigWarning';
 
 export default function ClientSelection() {
-  const { profile, logout } = useAuth();
+  const { profile, logout, selectedClient, setSelectedClient } = useAuth();
   const navigate = useNavigate();
   const [clients, setClients] = useState<Client[]>([]);
   const [sheetCarts, setSheetCarts] = useState<any[]>([]);
@@ -35,25 +35,33 @@ export default function ClientSelection() {
     }
   }, [profile, navigate]);
 
+  // Sync navigation on external/real-time client selection
+  useEffect(() => {
+    if (selectedClient) {
+      localStorage.setItem('selectedClient', JSON.stringify(selectedClient));
+      navigate('/catalog');
+    }
+  }, [selectedClient, navigate]);
+
   useEffect(() => {
     if (!profile) return;
     
     setLoading(true);
-    const fetchData = async () => {
+    const fetchSheetCarts = async () => {
       try {
-        const [sheetC, firestoreC] = await Promise.all([
-          dataService.getCartsFromSheets(),
-          dataService.getAllCarts()
-        ]);
+        const sheetC = await dataService.getCartsFromSheets();
         setSheetCarts(sheetC || []);
-        setFirestoreCarts(firestoreC || []);
       } catch (e) {
-        console.error('Error fetching carts:', e);
+        console.error('Error fetching sheet carts:', e);
       }
     };
-    fetchData();
+    fetchSheetCarts();
 
-    const cartInterval = setInterval(fetchData, 30000);
+    const cartInterval = setInterval(fetchSheetCarts, 30000);
+
+    const unsubFirestoreCarts = dataService.subscribeAllCarts(profile.uid, (carts) => {
+      setFirestoreCarts(carts || []);
+    });
 
     const unsubscribe = dataService.subscribeClients(
       profile.name, 
@@ -66,6 +74,7 @@ export default function ClientSelection() {
 
     return () => {
       unsubscribe();
+      unsubFirestoreCarts();
       clearInterval(cartInterval);
     };
   }, [profile]);
@@ -81,18 +90,25 @@ export default function ClientSelection() {
   }, [darkMode]);
 
   const filteredClients = clients.filter(c => {
+    if (!c) return false;
     const query = search.toLowerCase();
+    const name = String(c.name || '').toLowerCase();
+    const tradeName = String(c.tradeName || '').toLowerCase();
+    const cnpj = String(c.cnpj || '');
+    const city = String(c.city || '').toLowerCase();
+    const seller = String(c.seller || '').toLowerCase();
     return (
-      c.name.toLowerCase().includes(query) ||
-      c.tradeName.toLowerCase().includes(query) ||
-      c.cnpj.includes(query) ||
-      c.city.toLowerCase().includes(query) ||
-      c.seller.toLowerCase().includes(query)
+      name.includes(query) ||
+      tradeName.includes(query) ||
+      cnpj.includes(query) ||
+      city.includes(query) ||
+      seller.includes(query)
     );
   });
 
-  const handleSelectClient = (client: Client) => {
-    sessionStorage.setItem('selectedClient', JSON.stringify(client));
+  const handleSelectClient = async (client: Client) => {
+    localStorage.setItem('selectedClient', JSON.stringify(client));
+    await setSelectedClient(client);
     navigate('/catalog');
   };
 
@@ -240,15 +256,33 @@ export default function ClientSelection() {
           <div className="grid gap-3">
             <AnimatePresence mode="popLayout">
                 {filteredClients.map((client, index) => {
-                  const cartForClientSheet = sheetCarts.find(cart => 
-                    (cart.id && String(cart.id).trim() === String(client.id).trim()) || 
-                    (cart.clientName && (
-                      cart.clientName.toLowerCase().trim() === client.name.toLowerCase().trim() ||
-                      cart.clientName.toLowerCase().trim() === client.tradeName?.toLowerCase().trim()
-                    ))
-                  );
+                  const cartForClientSheet = sheetCarts?.find(cart => {
+                    if (!cart) return false;
+                    
+                    const cartIdStr = cart.id ? String(cart.id).trim().toLowerCase() : '';
+                    const clientIdStr = client.id ? String(client.id).trim().toLowerCase() : '';
+                    if (cartIdStr && clientIdStr && cartIdStr === clientIdStr) {
+                      return true;
+                    }
+                    
+                    if (cart.clientName) {
+                      const cartNameStr = String(cart.clientName).trim().toLowerCase();
+                      const clientNameStr = client.name ? String(client.name).trim().toLowerCase() : '';
+                      const clientTradeStr = client.tradeName ? String(client.tradeName).trim().toLowerCase() : '';
+                      
+                      if (clientNameStr && cartNameStr === clientNameStr) return true;
+                      if (clientTradeStr && cartNameStr === clientTradeStr) return true;
+                    }
+                    
+                    return false;
+                  });
 
-                  const cartForClientFirestore = firestoreCarts.find(cart => String(cart.clientId).trim() === String(client.id).trim());
+                  const cartForClientFirestore = firestoreCarts?.find(cart => {
+                    if (!cart || !cart.clientId) return false;
+                    const cartClientIdStr = String(cart.clientId).trim().toLowerCase();
+                    const clientIdStr = client.id ? String(client.id).trim().toLowerCase() : '';
+                    return cartClientIdStr && clientIdStr && cartClientIdStr === clientIdStr;
+                  });
                   const sheetItemCount = Number(cartForClientSheet?.itemsCount) || 0;
                   const firestoreItemCount = Number(cartForClientFirestore?.items?.length) || 0;
                   const itemCount = sheetItemCount + firestoreItemCount;

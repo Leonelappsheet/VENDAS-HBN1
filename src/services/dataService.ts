@@ -1075,16 +1075,21 @@ export const dataService = {
   },
 
   // Cart Persistence
-  async saveCart(clientId: string | number, items: OrderItem[]) {
+  async saveCart(userId: string, clientId: string | number, items: OrderItem[]) {
     const path = 'carts';
-    const cleanId = String(clientId);
+    const docId = `${userId}_${clientId}`;
     try {
       if (items.length === 0) {
-        await deleteDoc(doc(db, path, cleanId));
+        await deleteDoc(doc(db, path, docId));
       } else {
         // Clean items by JSON serializing and parsing to strip undefined values which throw errors in Firestore
         const cleanItems = JSON.parse(JSON.stringify(items));
-        await setDoc(doc(db, path, cleanId), { items: cleanItems, updatedAt: new Date().toISOString() });
+        await setDoc(doc(db, path, docId), {
+          userId,
+          clientId: String(clientId),
+          items: cleanItems,
+          updatedAt: new Date().toISOString()
+        });
       }
     } catch (error) {
       console.error('Error saving cart to Firestore:', error);
@@ -1093,11 +1098,11 @@ export const dataService = {
     }
   },
 
-  async getCart(clientId: string | number) {
+  async getCart(userId: string, clientId: string | number) {
     const path = 'carts';
-    const cleanId = String(clientId);
+    const docId = `${userId}_${clientId}`;
     try {
-      const docSnap = await getDoc(doc(db, path, cleanId));
+      const docSnap = await getDoc(doc(db, path, docId));
       return docSnap.exists() ? docSnap.data().items as OrderItem[] : [];
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, path);
@@ -1105,13 +1110,95 @@ export const dataService = {
     }
   },
 
-  async getAllCarts() {
+  async saveCartToSheets(clientId: string | number, items: OrderItem[]): Promise<{ sucesso: boolean; erro?: string }> {
+    try {
+      const appsScriptUrl = getAppsScriptUrl();
+      if (appsScriptUrl) {
+        const response = await fetch(appsScriptUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain'
+          },
+          body: JSON.stringify({
+            action: 'save-cart',
+            spreadsheetId: getSpreadsheetId(currentRegional),
+            clientId: String(clientId),
+            items
+          })
+        });
+        const resData = await response.json();
+        if (resData?.sucesso || resData?.success) {
+          return { sucesso: true };
+        }
+        return { sucesso: false, erro: resData?.error || "Erro no Google Apps Script" };
+      }
+
+      const response = await axios.post(`${getApiUrl()}/api/cart/save`, {
+        clientId: String(clientId),
+        items
+      }, {
+        headers: this.getHeaders()
+      });
+      if (response.data && response.data.sucesso) {
+        return { sucesso: true };
+      }
+      return { sucesso: false, erro: response.data?.error || "Erro desconhecido" };
+    } catch (e: any) {
+      console.error("Error saving cart to Google Sheets:", e);
+      const msg = e.response?.data?.error || e.response?.data?.message || e.message || "Erro de rede";
+      return { sucesso: false, erro: msg };
+    }
+  },
+
+  async getCartFromSheets(clientId: string | number): Promise<OrderItem[]> {
+    try {
+      const appsScriptUrl = getAppsScriptUrl();
+      if (appsScriptUrl) {
+        const response = await fetch(appsScriptUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain'
+          },
+          body: JSON.stringify({
+            action: 'get-cart',
+            spreadsheetId: getSpreadsheetId(currentRegional),
+            clientId: String(clientId)
+          })
+        });
+        const resData = await response.json();
+        if (resData && Array.isArray(resData.data)) {
+          return resData.data;
+        }
+        return [];
+      }
+
+      const response = await axios.get(`${getApiUrl()}/api/cart/${clientId}`, {
+        headers: this.getHeaders()
+      });
+      return Array.isArray(response.data) ? response.data : [];
+    } catch (e) {
+      console.error("Error fetching cart from Google Sheets:", e);
+      return [];
+    }
+  },
+
+  subscribeCart(userId: string, clientId: string | number, callback: (items: OrderItem[]) => void) {
+    const path = 'carts';
+    const docId = `${userId}_${clientId}`;
+    return onSnapshot(doc(db, path, docId), (docSnap) => {
+      callback(docSnap.exists() ? docSnap.data().items as OrderItem[] : []);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, path);
+    });
+  },
+
+  async getAllCarts(userId: string) {
     const path = 'carts';
     try {
-      const q = query(collection(db, path));
+      const q = query(collection(db, path), where('userId', '==', userId));
       const snapshot = await getDocs(q);
       return snapshot.docs.map(doc => ({
-        clientId: doc.id,
+        clientId: doc.data().clientId || doc.id.split('_')[1] || doc.id,
         items: doc.data().items as OrderItem[],
         updatedAt: doc.data().updatedAt
       }));
@@ -1119,6 +1206,51 @@ export const dataService = {
       console.error('Error fetching all carts:', error);
       return [];
     }
+  },
+
+  subscribeAllCarts(userId: string, callback: (carts: any[]) => void) {
+    const path = 'carts';
+    const q = query(collection(db, path), where('userId', '==', userId));
+    return onSnapshot(q, (snapshot) => {
+      const carts = snapshot.docs.map(doc => ({
+        clientId: doc.data().clientId || doc.id.split('_')[1] || doc.id,
+        items: doc.data().items as OrderItem[],
+        updatedAt: doc.data().updatedAt
+      }));
+      callback(carts);
+    }, (error) => {
+      console.error('Error in subscribeAllCarts:', error);
+      handleFirestoreError(error, OperationType.GET, path);
+    });
+  },
+
+  // User Session State (for syncing selected client and navigation)
+  async saveUserState(userId: string, selectedClient: Client | null) {
+    const path = 'userStates';
+    try {
+      await setDoc(doc(db, path, userId), {
+        username: userId,
+        selectedClient: selectedClient ? JSON.parse(JSON.stringify(selectedClient)) : null,
+        selectedClientId: selectedClient ? String(selectedClient.id) : null,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error saving user state:', error);
+      handleFirestoreError(error, OperationType.WRITE, path);
+    }
+  },
+
+  subscribeUserState(userId: string, callback: (selectedClient: Client | null) => void) {
+    const path = 'userStates';
+    return onSnapshot(doc(db, path, userId), (docSnap) => {
+      if (docSnap.exists()) {
+        callback(docSnap.data().selectedClient as Client | null);
+      } else {
+        callback(null);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, path);
+    });
   },
 
   // Metas from Google Sheets

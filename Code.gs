@@ -62,6 +62,12 @@ function doPost(e) {
       case 'update-image':
         responseData = updateImage(spreadsheetId, postData.id, postData.imageUrl, postData.sheetName);
         break;
+      case 'save-cart':
+        responseData = saveCart(spreadsheetId, postData.clientId, postData.items);
+        break;
+      case 'get-cart':
+        responseData = getCart(spreadsheetId, postData.clientId);
+        break;
       default:
         responseData = { error: "Ação não suportada pelo Apps Script: " + action };
     }
@@ -890,6 +896,165 @@ function updateCatalog(spreadsheetId, industria, dados, defaultExpiryDate) {
       log: log,
       hasNew: newCount > 0
     };
+  } catch (error) {
+    return { error: error.message || error.toString() };
+  }
+}
+
+/**
+ * Salva os itens do carrinho temporário de um cliente na aba ItensPedido
+ */
+function saveCart(spreadsheetId, clientId, items) {
+  try {
+    var ss = SpreadsheetApp.openById(spreadsheetId);
+    var sheet = ss.getSheetByName("ItensPedido");
+    if (!sheet) {
+      return { error: "Aba 'ItensPedido' não encontrada." };
+    }
+
+    var values = sheet.getDataRange().getValues();
+    var cartId = "CARRINHO_" + clientId;
+
+    // Remove existing rows for this client's cart
+    for (var i = values.length - 1; i >= 1; i--) {
+      if (String(values[i][1] || "").trim() === cartId) {
+        sheet.deleteRow(i + 1);
+      }
+    }
+
+    // Append new cart rows
+    if (items && items.length > 0) {
+      for (var j = 0; j < items.length; j++) {
+        var item = items[j];
+        var quantity = Number(item.quantity) || 0;
+        var price = Number(item.finalPrice) || 0;
+        sheet.appendRow([
+          cartId + "_" + item.id,       // IDItem
+          cartId,                       // IDPedido
+          String(item.id),              // IDProduto
+          String(item.ean || ""),       // Codigo de Barras
+          String(item.description || ""), // Descricao
+          String(item.manufacturer || ""), // Fabricante
+          quantity,                     // Qtd
+          price,                        // Preco
+          quantity * price              // Subtotal
+        ]);
+      }
+    }
+
+    // Dynamic handling of Carrinhos sheet overview
+    var sheetCarrinhos = ss.getSheetByName("Carrinhos") || ss.getSheetByName("Carrinho") || ss.getSheetByName("carrinhos") || ss.getSheetByName("carrinho");
+    if (!sheetCarrinhos) {
+      try {
+        sheetCarrinhos = ss.insertSheet("Carrinhos");
+        sheetCarrinhos.appendRow(["IDCliente", "Cliente", "Data", "Itens", "Total"]);
+      } catch (err) {
+        console.warn("Could not insert Carrinhos sheet: " + err.toString());
+      }
+    }
+
+    if (sheetCarrinhos) {
+      var carrinhosValues = sheetCarrinhos.getDataRange().getValues();
+      var foundRowIdx = -1;
+      for (var r = 1; r < carrinhosValues.length; r++) {
+        if (String(carrinhosValues[r][0] || "").trim() === String(clientId).trim()) {
+          foundRowIdx = r + 1;
+          break;
+        }
+      }
+
+      var clientName = "Cliente " + clientId;
+      var sheetClientes = ss.getSheetByName("Clientes");
+      if (sheetClientes) {
+        var clientesValues = sheetClientes.getDataRange().getValues();
+        for (var k = 1; k < clientesValues.length; k++) {
+          if (String(clientesValues[k][0] || "").trim() === String(clientId).trim()) {
+            clientName = String(clientesValues[k][1] || clientesValues[k][2] || clientName).trim();
+            break;
+          }
+        }
+      }
+
+      var total = 0;
+      var itemsCount = 0;
+      if (items && items.length > 0) {
+        itemsCount = items.length;
+        for (var j = 0; j < items.length; j++) {
+          total += (Number(items[j].quantity) || 0) * (Number(items[j].finalPrice) || 0);
+        }
+      }
+
+      var nowStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "GMT-3", "dd/MM/yyyy HH:mm:ss");
+
+      if (itemsCount === 0) {
+        if (foundRowIdx !== -1) {
+          sheetCarrinhos.deleteRow(foundRowIdx);
+        }
+      } else {
+        var rowData = [
+          String(clientId),
+          clientName,
+          nowStr,
+          itemsCount,
+          total
+        ];
+
+        if (foundRowIdx !== -1) {
+          sheetCarrinhos.getRange(foundRowIdx, 1, 1, 5).setValues([rowData]);
+        } else {
+          sheetCarrinhos.appendRow(rowData);
+        }
+      }
+    }
+
+    return { sucesso: true };
+  } catch (error) {
+    return { error: error.message || error.toString() };
+  }
+}
+
+/**
+ * Recupera os itens do carrinho temporário de um cliente da aba ItensPedido
+ */
+function getCart(spreadsheetId, clientId) {
+  try {
+    var ss = SpreadsheetApp.openById(spreadsheetId);
+    var sheet = ss.getSheetByName("ItensPedido");
+    if (!sheet) {
+      return { error: "Aba 'ItensPedido' não encontrada." };
+    }
+
+    var values = sheet.getDataRange().getValues();
+    if (values.length <= 1) {
+      return { data: [] };
+    }
+
+    var cartId = "CARRINHO_" + clientId;
+    var items = [];
+
+    for (var i = 1; i < values.length; i++) {
+      var row = values[i];
+      if (String(row[1] || "").trim() === cartId) {
+        var quantity = Number(row[6]) || 0;
+        var finalPrice = Number(row[7]) || 0;
+        items.push({
+          id: String(row[2] || ""),
+          ean: String(row[3] || ""),
+          description: String(row[4] || ""),
+          manufacturer: String(row[5] || ""),
+          quantity: quantity,
+          finalPrice: finalPrice,
+          stock: 999, // placeholder stock
+          salePrice: finalPrice,
+          discount: 0,
+          category: "",
+          photo: "",
+          type: "normal"
+        });
+      }
+    }
+
+    return { data: items };
   } catch (error) {
     return { error: error.message || error.toString() };
   }

@@ -1,12 +1,14 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { UserProfile } from '../types';
+import { UserProfile, Client } from '../types';
 import { dataService } from '../services/dataService';
 import { auth } from '../lib/firebase';
-import { signInAnonymously } from 'firebase/auth';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 
 interface AuthContextType {
   profile: UserProfile | null;
   loading: boolean;
+  selectedClient: Client | null;
+  setSelectedClient: (client: Client | null) => Promise<void>;
   login: (username: string, password?: string) => Promise<boolean>;
   logout: () => Promise<void>;
 }
@@ -16,6 +18,119 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedClient, setSelectedClientState] = useState<Client | null>(() => {
+    try {
+      const saved = localStorage.getItem('selectedClient');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [userStateLoaded, setUserStateLoaded] = useState(false);
+  const [firebaseAuthed, setFirebaseAuthed] = useState(false);
+
+  // Listen for firebase auth state change
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setFirebaseAuthed(!!user);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Subscribe to userState in Firestore when profile changes and firebase is authenticated
+  useEffect(() => {
+    if (loading) {
+      // Wait until local storage profile loading is complete
+      return;
+    }
+
+    if (!profile) {
+      setSelectedClientState(null);
+      setUserStateLoaded(true);
+      return;
+    }
+
+    if (!firebaseAuthed) {
+      // Do not block rendering, but mark as not loaded yet for Firestore
+      return;
+    }
+
+    setUserStateLoaded(false);
+
+    // Safety timeout: proceed after 1.5 seconds under any circumstance
+    const timeoutId = setTimeout(() => {
+      console.warn('User state subscription safety timeout triggered.');
+      setUserStateLoaded(true);
+    }, 1500);
+
+    const unsubscribe = dataService.subscribeUserState(profile.uid, (client) => {
+      clearTimeout(timeoutId);
+      if (client) {
+        setSelectedClientState(client);
+      } else {
+        // If Firestore has no saved client but we have one locally, use it and upload to Firestore
+        try {
+          const localSaved = localStorage.getItem('selectedClient');
+          if (localSaved) {
+            const parsed = JSON.parse(localSaved);
+            if (parsed) {
+              setSelectedClientState(parsed);
+              dataService.saveUserState(profile.uid, parsed).catch(err => {
+                console.error("Error pushing local userState to firestore:", err);
+              });
+              setUserStateLoaded(true);
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn("Failed to parse local selectedClient:", e);
+        }
+        setSelectedClientState(null);
+      }
+      setUserStateLoaded(true);
+    });
+
+    return () => {
+      clearTimeout(timeoutId);
+      unsubscribe();
+    };
+  }, [profile, firebaseAuthed, loading]);
+
+  // Synchronize selectedClient to localStorage
+  useEffect(() => {
+    if (loading) {
+      // Do not touch localStorage during initial load to prevent premature wipes
+      return;
+    }
+    try {
+      if (selectedClient) {
+        localStorage.setItem('selectedClient', JSON.stringify(selectedClient));
+      } else {
+        localStorage.removeItem('selectedClient');
+      }
+    } catch (e) {
+      console.error('Failed to sync selectedClient to localStorage:', e);
+    }
+  }, [selectedClient, loading]);
+
+  const setSelectedClient = async (client: Client | null) => {
+    if (!profile) return;
+    setSelectedClientState(client);
+    try {
+      if (client) {
+        localStorage.setItem('selectedClient', JSON.stringify(client));
+      } else {
+        localStorage.removeItem('selectedClient');
+      }
+    } catch (e) {
+      console.error('Failed to sync selectedClient to localStorage:', e);
+    }
+    try {
+      await dataService.saveUserState(profile.uid, client);
+    } catch (err) {
+      console.error('Failed to save user state in Firestore:', err);
+    }
+  };
 
   useEffect(() => {
     const initializeAuth = async () => {
@@ -129,8 +244,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [profile]);
 
+  const isAuthLoading = loading;
+
   return (
-    <AuthContext.Provider value={{ profile, loading, login, logout }}>
+    <AuthContext.Provider value={{ profile, loading: isAuthLoading, selectedClient, setSelectedClient, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

@@ -358,7 +358,7 @@ const ProductCard = React.memo<ProductCardProps>(({
 ProductCard.displayName = 'ProductCard';
 
 export default function ProductCatalog() {
-  const { profile, logout } = useAuth();
+  const { profile, logout, selectedClient, setSelectedClient } = useAuth();
   const navigate = useNavigate();
   const [headerHeight, setHeaderHeight] = useState(120);
   const headerRef = useRef<HTMLDivElement>(null);
@@ -406,18 +406,25 @@ export default function ProductCatalog() {
     return () => clearTimeout(handler);
   }, [searchInputValue]);
 
-  const selectedClient: Client | null = useMemo(() => {
-    const saved = sessionStorage.getItem('selectedClient');
-    return saved ? JSON.parse(saved) : null;
-  }, []);
-
   const cartKey = useMemo(() => {
     if (selectedClient) return `cart_${selectedClient.id}`;
     if (profile?.role === 'promotor') return `cart_promotor_${profile.uid}`;
     return 'cart_nz';
   }, [selectedClient, profile]);
 
-  const [cart, setCart] = useState<OrderItem[]>([]);
+  const [cart, setCart] = useState<OrderItem[]>(() => {
+    try {
+      const key = selectedClient 
+        ? `cart_${selectedClient.id}` 
+        : (profile?.role === 'promotor' ? `cart_promotor_${profile.uid}` : 'cart_nz');
+      const saved = localStorage.getItem(key);
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+  const lastSyncedCartRef = useRef<string>('');
+  const saveCartTimeoutRef = useRef<any>(null);
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [cartLoaded, setCartLoaded] = useState(false);
@@ -511,28 +518,91 @@ export default function ProductCatalog() {
   }, [search, selectedManufacturers, selectedCategories, statusFilters, activeTab, sortBy]);
 
   useEffect(() => {
+    setCartLoaded(false);
+    
+    // Instantly initialize cart from localStorage to prevent screen-clearing/flicker
+    try {
+      const saved = localStorage.getItem(cartKey);
+      setCart(saved ? JSON.parse(saved) : []);
+    } catch (e) {
+      setCart([]);
+    }
+
     const isPromotor = profile?.role === 'promotor';
     if (!selectedClient && !isPromotor) return;
 
     const regional = selectedClient?.regional || profile?.regional || 'TIMON-MA';
     dataService.setRegional(regional);
 
-    if (selectedClient) {
-      // Load cart from Firestore
-      dataService.getCart(selectedClient.id).then(items => {
-        if (items && items.length > 0) {
-          setCart(items);
+    // Cart loading / subscribing
+    let unsubCart = () => {};
+    if (isPromotor && !selectedClient) {
+      setCartLoaded(true);
+    } else if (selectedClient && profile) {
+      let isFirstFiring = true;
+      const savedLocal = localStorage.getItem(cartKey);
+      let localItems: OrderItem[] = [];
+      try {
+        localItems = savedLocal ? JSON.parse(savedLocal) : [];
+        if (!Array.isArray(localItems)) {
+          localItems = [];
+        }
+      } catch (e) {
+        console.warn("Error parsing savedLocal cart:", e);
+      }
+
+      // Fetch cart from Sheets in parallel to sync it on initialization
+      dataService.getCartFromSheets(selectedClient.id).then((sheetItems) => {
+        if (sheetItems && Array.isArray(sheetItems) && sheetItems.length > 0) {
+          console.log(`[Google Sheets Cart] Restored ${sheetItems.length} items from ItensPedido for client:`, selectedClient.id);
+          const itemsStr = JSON.stringify(sheetItems);
+          localStorage.setItem(cartKey, itemsStr);
+          lastSyncedCartRef.current = itemsStr;
+          setCart(sheetItems);
+          dataService.saveCart(profile.uid, selectedClient.id, sheetItems).catch(err => {
+            console.error("Error syncing Sheets cart to Firestore:", err);
+          });
+        }
+      }).catch(err => {
+        console.error("Error fetching cart from Sheets on init:", err);
+      });
+
+      unsubCart = dataService.subscribeCart(profile.uid, selectedClient.id, (firestoreItems) => {
+        if (firestoreItems && Array.isArray(firestoreItems) && firestoreItems.length > 0) {
+          // Firestore has a cart, use it and update local storage
+          const itemsStr = JSON.stringify(firestoreItems);
+          lastSyncedCartRef.current = itemsStr;
+          setCart(firestoreItems);
+          localStorage.setItem(cartKey, itemsStr);
         } else {
-          // Fallback to localStorage if Firestore is empty
-          const saved = localStorage.getItem(cartKey);
-          if (saved) setCart(JSON.parse(saved));
+          // Firestore is empty. Let's see if we have items locally to push to Firestore
+          const savedLocal = localStorage.getItem(cartKey);
+          let localItems: OrderItem[] = [];
+          try {
+            localItems = savedLocal ? JSON.parse(savedLocal) : [];
+            if (!Array.isArray(localItems)) {
+              localItems = [];
+            }
+          } catch (e) {
+            localItems = [];
+          }
+          
+          if (localItems.length > 0) {
+            // We have a local cart, upload it to Firestore and keep it as cart state
+            const itemsStr = JSON.stringify(localItems);
+            lastSyncedCartRef.current = itemsStr;
+            setCart(localItems);
+            dataService.saveCart(profile.uid, selectedClient.id, localItems).catch(err => {
+              console.error("Error pushing local cart to firestore:", err);
+            });
+          } else {
+            // Neither Firestore nor local storage has items
+            setCart([]);
+            localStorage.setItem(cartKey, '[]');
+          }
         }
         setCartLoaded(true);
       });
-    } else if (isPromotor) {
-      const saved = localStorage.getItem(cartKey);
-      if (saved) setCart(JSON.parse(saved));
-      setCartLoaded(true);
     }
 
     const unsubProducts = dataService.subscribeProducts((data) => {
@@ -558,19 +628,37 @@ export default function ProductCatalog() {
     
     const fetchPendingCarts = async () => {
       if (!selectedClient && !isPromotor) return;
-      const carts = await dataService.getAllCarts();
-      const filtered = carts.filter(c => selectedClient ? c.clientId !== selectedClient.id : true && c.items.length > 0);
-      
-      // Map names
-      const clientsWithNames = await Promise.all(filtered.map(async cart => {
-        const client = await dataService.getClients(undefined, true).then(list => list.find(cl => cl.id === cart.clientId));
-        return {
-          ...cart,
-          clientName: client?.tradeName || client?.name || `Cliente ${cart.clientId}`
-        };
-      }));
+      if (!profile) return;
+      try {
+        const carts = await dataService.getAllCarts(profile.uid);
+        
+        // Double check after async call
+        if (!profile) return;
+        
+        const filtered = carts.filter(c => {
+          if (!c) return false;
+          const itemsCount = c.items && Array.isArray(c.items) ? c.items.length : 0;
+          if (itemsCount === 0) return false;
+          
+          if (selectedClient) {
+            return String(c.clientId).trim() !== String(selectedClient.id).trim();
+          }
+          return true;
+        });
+        
+        // Map names
+        const clientsWithNames = await Promise.all(filtered.map(async cart => {
+          const client = await dataService.getClients(undefined, true).then(list => list.find(cl => cl.id === cart.clientId));
+          return {
+            ...cart,
+            clientName: client?.tradeName || client?.name || `Cliente ${cart.clientId}`
+          };
+        }));
 
-      setPendingCarts(clientsWithNames);
+        setPendingCarts(clientsWithNames);
+      } catch (e) {
+        console.error("Error fetching pending carts:", e);
+      }
     };
 
     if (selectedClient) {
@@ -579,6 +667,7 @@ export default function ProductCatalog() {
     const cartInterval = selectedClient ? setInterval(fetchPendingCarts, 30000) : undefined;
 
     return () => {
+      unsubCart();
       unsubProducts();
       unsubFavorites();
       unsubBanners();
@@ -591,12 +680,56 @@ export default function ProductCatalog() {
     if (!cartLoaded) return;
     
     localStorage.setItem(cartKey, JSON.stringify(cart));
-    if (selectedClient) {
-      dataService.saveCart(selectedClient.id, cart);
-    }
-  }, [cart, cartKey, selectedClient, cartLoaded]);
+    
+    const isPromotor = profile?.role === 'promotor';
+    if (isPromotor && !selectedClient) return;
 
-  if (!selectedClient && profile?.role !== 'promotor') return <Navigate to="/" />;
+    if (selectedClient && profile) {
+      const cartStr = JSON.stringify(cart);
+      if (cartStr === lastSyncedCartRef.current) {
+        return;
+      }
+
+      // Clear any pending sync timeout
+      if (saveCartTimeoutRef.current) {
+        clearTimeout(saveCartTimeoutRef.current);
+      }
+
+      // Schedule the sync after a 1.2s delay of inactivity (perfect for typing quantities)
+      saveCartTimeoutRef.current = setTimeout(() => {
+        const currentCartStr = JSON.stringify(cart);
+        lastSyncedCartRef.current = currentCartStr;
+
+        // Show silent toast indicating saving is in progress
+        toast.loading("Salvando carrinho na planilha...", { id: 'sheets-cart-sync' });
+
+        dataService.saveCart(profile.uid, selectedClient.id, cart).catch(err => {
+          console.error("Error saving cart to firestore:", err);
+        });
+
+        // Synchronize with Google Sheets
+        dataService.saveCartToSheets(selectedClient.id, cart).then((result) => {
+          if (result.sucesso) {
+            toast.success("Carrinho atualizado na planilha!", { id: 'sheets-cart-sync' });
+          } else {
+            toast.error(`Erro na Planilha: ${result.erro}`, { 
+              id: 'sheets-cart-sync',
+              description: "Verifique se a planilha está compartilhada como Editor com o e-mail da sua conta de serviço Google.",
+              duration: 6000
+            });
+          }
+        }).catch(err => {
+          toast.error(`Erro de conexão com Google Sheets: ${err.message}`, { id: 'sheets-cart-sync' });
+        });
+      }, 1200);
+    }
+
+    return () => {
+      if (saveCartTimeoutRef.current) {
+        clearTimeout(saveCartTimeoutRef.current);
+      }
+    };
+  }, [cart, cartKey, selectedClient, profile, cartLoaded]);
 
   const manufacturers = useMemo(() => {
     const set = new Set<string>();
@@ -1855,6 +1988,10 @@ export default function ProductCatalog() {
     setBulkImportText('');
   };
 
+  if (!selectedClient && profile?.role !== 'promotor') {
+    return <Navigate to="/" />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#121212] pb-24 font-sans">
       <div ref={headerRef} className="sticky top-0 z-40 w-full shadow-sm">
@@ -1874,7 +2011,10 @@ export default function ProductCatalog() {
             <motion.button 
               whileHover={{ scale: 1.1, backgroundColor: "rgba(255,255,255,0.3)" }}
               whileTap={{ scale: 0.9 }}
-              onClick={() => navigate('/')} 
+              onClick={async () => {
+                await setSelectedClient(null);
+                navigate('/');
+              }} 
               className="p-2 bg-white/10 rounded-full text-white transition-colors"
           >
             <ChevronLeft size={24} />
@@ -2463,14 +2603,14 @@ export default function ProductCatalog() {
                           onClick={() => {
                             const client = allClients.find(c => c.id === pCart.clientId);
                             if (client) {
-                              sessionStorage.setItem('selectedClient', JSON.stringify(client));
+                              localStorage.setItem('selectedClient', JSON.stringify(client));
                               window.location.reload();
                             } else {
                               // If not in partial list, try to fetch it
                               dataService.getClients(undefined, true).then(fullList => {
                                 const fullClient = fullList.find(c => c.id === pCart.clientId);
                                 if (fullClient) {
-                                  sessionStorage.setItem('selectedClient', JSON.stringify(fullClient));
+                                  localStorage.setItem('selectedClient', JSON.stringify(fullClient));
                                   window.location.reload();
                                 }
                               });
@@ -3350,7 +3490,7 @@ export default function ProductCatalog() {
                   </motion.button>
                 )}
               </div>
-              <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => { setShowOrderSuccess(false); navigate('/'); }} className="w-full bg-gray-900 text-white py-4 rounded-2xl font-bold">
+              <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={async () => { setShowOrderSuccess(false); await setSelectedClient(null); navigate('/'); }} className="w-full bg-gray-900 text-white py-4 rounded-2xl font-bold">
                 {profile?.role === 'promotor' ? 'Novo Pedido' : 'Voltar ao Início'}
               </motion.button>
             </motion.div>

@@ -101,9 +101,25 @@
         "seller": { "type": "string", "description": "Seller name" }
       },
       "required": ["id", "timestamp", "seller"]
+    },
+    "UserState": {
+      "title": "UserState",
+      "description": "User active session and navigation state",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string", "description": "Unique username/uid" },
+        "selectedClientId": { "type": "string", "description": "Selected client ID if any" },
+        "selectedClient": { "type": "object", "description": "Selected client data" },
+        "updatedAt": { "type": "string", "description": "Last updated timestamp" }
+      },
+      "required": ["username"]
     }
   },
   "firestore": {
+    "userStates": {
+      "schema": "UserState",
+      "description": "User active states and selections"
+    },
     "products": {
       "schema": "Product",
       "description": "Catalog products"

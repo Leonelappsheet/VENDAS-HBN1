@@ -642,8 +642,25 @@ apiRouter.post("/order", async (req, res) => {
       },
     });
 
-    // 2. Save to ItensPedido sheet
-    // IDItem, IDPedido, IDProduto, Codigo Barras, Descricao, Fabricante, Qtd, Preco, Subtotal
+    // 2. Read and filter out CARRINHO_${order.clientId} from ItensPedido, then append new order items
+    const range = "ItensPedido!A:I";
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range,
+    });
+
+    const rows = response.data.values || [];
+    let headers = ["IDItem", "IDPedido", "IDProduto", "Codigo de Barras", "Descricao", "Fabricante", "Qtd", "Preco", "Subtotal"];
+    if (rows.length > 0) {
+      headers = rows[0];
+    }
+
+    const cartId = `CARRINHO_${order.clientId}`;
+    const nonCartRows = rows.slice(1).filter((row: any[]) => {
+      return String(row[1] || "").trim() !== cartId;
+    });
+
+    // Finalized order items
     const itemRows = order.items.map((item: any, index: number) => [
       `${order.id}-${index + 1}`,
       order.id,
@@ -656,18 +673,274 @@ apiRouter.post("/order", async (req, res) => {
       item.quantity * item.finalPrice
     ]);
 
-    await sheets.spreadsheets.values.append({
+    const finalRows = [headers, ...nonCartRows, ...itemRows];
+
+    // Clear and write back to ItensPedido
+    await sheets.spreadsheets.values.clear({
       spreadsheetId,
-      range: "ItensPedido!A:I",
-      valueInputOption: "RAW",
+      range,
+    });
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: "ItensPedido!A1",
+      valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: itemRows,
+        values: finalRows,
       },
     });
 
     res.json({ sucesso: true, idPedido: order.id });
   } catch (error: any) {
     console.error("Error saving order to Sheets:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.post("/cart/save", async (req, res) => {
+  try {
+    const { clientId, items } = req.body;
+    const spreadsheetId = getRequestSpreadsheetId(req);
+    
+    if (!clientId) {
+      return res.status(400).json({ error: "Missing clientId" });
+    }
+
+    const sheets = await getSheetsClient();
+    const range = "ItensPedido!A:I";
+
+    // Read existing rows
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range,
+    });
+
+    const rows = response.data.values || [];
+    let headers = ["IDItem", "IDPedido", "IDProduto", "Codigo de Barras", "Descricao", "Fabricante", "Qtd", "Preco", "Subtotal"];
+    if (rows.length > 0) {
+      headers = rows[0];
+    }
+
+    const cartId = `CARRINHO_${clientId}`;
+
+    // Filter out previous cart rows for this client
+    const nonCartRows = rows.slice(1).filter((row: any[]) => {
+      return String(row[1] || "").trim() !== cartId;
+    });
+
+    // Create new cart rows
+    const newCartRows = (items || []).map((item: any, idx: number) => {
+      const quantity = Number(item.quantity) || 0;
+      const price = Number(item.finalPrice) || 0;
+      return [
+        `${cartId}_${item.id}`,       // IDItem
+        cartId,                       // IDPedido
+        String(item.id),              // IDProduto
+        String(item.ean || ""),       // Codigo de Barras
+        String(item.description || ""), // Descricao
+        String(item.manufacturer || ""), // Fabricante
+        quantity,                     // Qtd
+        price,                        // Preco
+        quantity * price              // Subtotal
+      ];
+    });
+
+    const finalRows = [headers, ...nonCartRows, ...newCartRows];
+
+    // Clear and write back
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId,
+      range,
+    });
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: "ItensPedido!A1",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: finalRows,
+      },
+    });
+
+    // Dynamic handling of Carrinhos sheet overview
+    try {
+      const meta = await sheets.spreadsheets.get({ spreadsheetId });
+      const sheetNames = (meta.data.sheets || []).map(s => s.properties?.title || "");
+      let targetSheetName = sheetNames.find(name => 
+        ['carrinhos', 'carrinho'].includes(name.toLowerCase())
+      );
+
+      if (!targetSheetName) {
+        try {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId,
+            requestBody: {
+              requests: [
+                {
+                  addSheet: {
+                    properties: {
+                      title: "Carrinhos"
+                    }
+                  }
+                }
+              ]
+            }
+          });
+          targetSheetName = "Carrinhos";
+          // Initialize headers for new sheet
+          await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: "Carrinhos!A1",
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: [["IDCliente", "Cliente", "Data", "Itens", "Total"]]
+            }
+          });
+        } catch (sheetErr) {
+          console.error("Could not create Carrinhos sheet dynamically:", sheetErr);
+        }
+      }
+
+      if (targetSheetName) {
+        // Resolve client name
+        let clientName = `Cliente ${clientId}`;
+        try {
+          const clientesRes = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: "Clientes!A:C",
+          });
+          const clientesRows = clientesRes.data.values || [];
+          for (let k = 1; k < clientesRows.length; k++) {
+            if (String(clientesRows[k][0] || "").trim() === String(clientId).trim()) {
+              clientName = String(clientesRows[k][1] || clientesRows[k][2] || clientName).trim();
+              break;
+            }
+          }
+        } catch (err) {
+          console.warn("Could not fetch client name from Clientes sheet:", err);
+        }
+
+        const carrinhosRes = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `${targetSheetName}!A:E`,
+        });
+        const carrinhosRows = carrinhosRes.data.values || [];
+        let carrinhosHeaders = ["IDCliente", "Cliente", "Data", "Itens", "Total"];
+        if (carrinhosRows.length > 0) {
+          carrinhosHeaders = carrinhosRows[0];
+        }
+
+        const nonClientCarrinhoRows = carrinhosRows.slice(1).filter((row: any[]) => {
+          return String(row[0] || "").trim() !== String(clientId).trim();
+        });
+
+        const total = (items || []).reduce((acc: number, item: any) => {
+          const qty = Number(item.quantity) || 0;
+          const price = Number(item.finalPrice) || 0;
+          return acc + (qty * price);
+        }, 0);
+
+        const nowStr = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+
+        if (items && items.length > 0) {
+          const newRow = [
+            String(clientId),
+            clientName,
+            nowStr,
+            items.length,
+            total
+          ];
+          const finalCarrinhosRows = [carrinhosHeaders, ...nonClientCarrinhoRows, newRow];
+
+          await sheets.spreadsheets.values.clear({
+            spreadsheetId,
+            range: `${targetSheetName}!A:E`,
+          });
+
+          await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `${targetSheetName}!A1`,
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: finalCarrinhosRows,
+            },
+          });
+        } else {
+          // Empty items, remove from overview
+          const finalCarrinhosRows = [carrinhosHeaders, ...nonClientCarrinhoRows];
+
+          await sheets.spreadsheets.values.clear({
+            spreadsheetId,
+            range: `${targetSheetName}!A:E`,
+          });
+
+          await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `${targetSheetName}!A1`,
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: finalCarrinhosRows,
+            },
+          });
+        }
+      }
+    } catch (carrinhoErr) {
+      console.error("Error managing Carrinhos overview sheet:", carrinhoErr);
+    }
+
+    res.json({ sucesso: true });
+  } catch (error: any) {
+    console.error("Error saving cart to Sheets:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+apiRouter.get("/cart/:clientId", async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const spreadsheetId = getRequestSpreadsheetId(req);
+    const sheets = await getSheetsClient();
+
+    const range = "ItensPedido!A:I";
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range,
+    });
+
+    const rows = response.data.values || [];
+    if (rows.length === 0) {
+      return res.json([]);
+    }
+
+    const cartId = `CARRINHO_${clientId}`;
+
+    // Columns: IDItem, IDPedido, IDProduto, Codigo de Barras, Descricao, Fabricante, Qtd, Preco, Subtotal
+    const cartRows = rows.slice(1).filter((row: any[]) => {
+      return String(row[1] || "").trim() === cartId;
+    });
+
+    const items = cartRows.map((row: any[]) => {
+      const quantity = Number(row[6]) || 0;
+      const finalPrice = Number(row[7]) || 0;
+      return {
+        id: String(row[2] || ""),
+        ean: String(row[3] || ""),
+        description: String(row[4] || ""),
+        manufacturer: String(row[5] || ""),
+        quantity,
+        finalPrice,
+        stock: 999, // placeholder, client-side will merge
+        salePrice: finalPrice,
+        discount: 0,
+        category: "",
+        photo: "",
+        type: "normal" as const
+      };
+    });
+
+    res.json(items);
+  } catch (error: any) {
+    console.error("Error getting cart from Sheets:", error);
     res.status(500).json({ error: error.message });
   }
 });

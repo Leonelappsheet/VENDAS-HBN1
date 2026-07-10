@@ -247,7 +247,9 @@ export default function ImportPanel() {
       localStorage.setItem(cartKey, JSON.stringify(cartItems));
       
       try {
-        await dataService.saveCart(client.id, cartItems);
+        if (profile) {
+          await dataService.saveCart(profile.uid, client.id, cartItems);
+        }
       } catch (fsErr) {
         console.warn('Silent fallback for Firestore saveCart failure:', fsErr);
       }
@@ -267,7 +269,7 @@ export default function ImportPanel() {
   };
 
   const selectedClient = useMemo(() => {
-    const saved = sessionStorage.getItem('selectedClient');
+    const saved = localStorage.getItem('selectedClient');
     return saved ? JSON.parse(saved) : null;
   }, []);
 
@@ -806,7 +808,9 @@ export default function ImportPanel() {
           localStorage.setItem(cartKey, JSON.stringify(cartItems));
           
           try {
-            await dataService.saveCart(client.id, cartItems);
+            if (profile) {
+              await dataService.saveCart(profile.uid, client.id, cartItems);
+            }
           } catch (fsErr) {
             console.warn(`Silent fallback for Firestore saveCart failure (client ${client.id}):`, fsErr);
           }
@@ -825,7 +829,7 @@ export default function ImportPanel() {
           const firstClientName = processedClients[0];
           const firstClient = results.find(r => r.client?.name === firstClientName)?.client;
           if (firstClient) {
-            sessionStorage.setItem('selectedClient', JSON.stringify(firstClient));
+            localStorage.setItem('selectedClient', JSON.stringify(firstClient));
           }
         }
         
