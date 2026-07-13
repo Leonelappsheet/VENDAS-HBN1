@@ -412,297 +412,396 @@ export default function ImportPanel() {
             }
 
             const importResults: any[] = [];
-            let lastDetectedClient: any = null;
+            let currentClientObj: any = null;
+            let unmatchedBuffer: string[] = [];
 
             for (const pageObj of pageTexts) {
               const pageText = pageObj.text;
+              const pageLines = pageText.split('\n');
               
-              // 1. Identify client header on this page
-              // A. Nazaria Filial header
-              const filialMatch = pageText.match(/Filial:\s*(\d+)\s+([\d\.\/\-]+)\s+([^\n]+)/i);
-              
-              // B. A7 Pharma Unidade header
-              const unidadeMatch = pageText.match(/Unidade:\s*(.*?)(?=Usuário:|CNPJ:|$)/i);
-              
-              // C. INOVAFARMA header
-              const inovafarmaMatch = pageText.match(/Razão\s+Social:\s*([^\n]+)/i);
-              
-              let clientObj: any = null;
-              
-              if (filialMatch) {
-                const filialNum = filialMatch[1];
-                const cnpjRaw = filialMatch[2];
-                const nameRaw = filialMatch[3];
-                const cnpj = cnpjRaw.replace(/[^\d]/g, '');
-                
-                // Clean the name of trailing form details or pagination info
-                let name = nameRaw;
-                const truncateKeywords = [
-                  'Forma de Pagamento', 'Bairro', 'Endereço', 'Endereco', 
-                  'Cep', 'Cidade', 'UF', 'Numero Pedido', 'Dt. Emissão', 'Dt. Emissao'
-                ];
-                truncateKeywords.forEach(kw => {
-                  const idx = name.toLowerCase().indexOf(kw.toLowerCase());
-                  if (idx !== -1) {
-                    name = name.substring(0, idx).trim();
-                  }
-                });
-                name = name.replace(/[\s\-–—]+$/, '').trim();
-                
-                const fornecedorMatch = pageText.match(/Fornecedor:\s*(.*?)(?=Numero|$)/i);
-                const numeroPedidoMatch = pageText.match(/Numero Pedido:\s*(\d+)/i);
-                
-                clientObj = {
-                  clientName: name,
-                  cnpj: cnpj,
-                  items: [],
-                  headerInfo: {
-                    fornecedor: fornecedorMatch ? fornecedorMatch[1].trim() : 'NAZARIA DISTRIBUIDORA',
-                    condPgto: '',
-                    status: 'Pendente',
-                    dataEntrega: '',
-                    cotacao: numeroPedidoMatch ? `Pedido #${numeroPedidoMatch[1]}` : `Filial ${filialNum}`
-                  }
-                };
-              } else if (unidadeMatch) {
-                const name = unidadeMatch[1].trim();
-                const cnpjMatch = pageText.match(/CNPJ:\s*([\d\.\/\-]+)/i);
-                const cnpj = cnpjMatch ? cnpjMatch[1].trim().replace(/[^\d]/g, '') : '';
-                
-                const fornecedorMatch = pageText.match(/Fornecedor:\s*(.*?)(?=Cond\.|$)/i);
-                const condPgtoMatch = pageText.match(/Cond\. Pgto:\s*(.*?)(?=Status|$)/i);
-                const statusMatch = pageText.match(/Status:\s*(.*?)(?=Data|$)/i);
-                const dataEntregaMatch = pageText.match(/Data Entrega:\s*([\d/]+\s*[\d:]*)/i);
-                const cotacaoMatch = pageText.match(/Cotação:\s*(.*?)(?=\n|$)/i);
-                
-                clientObj = {
-                  clientName: name,
-                  cnpj: cnpj,
-                  items: [],
-                  headerInfo: {
-                    fornecedor: fornecedorMatch ? fornecedorMatch[1].trim() : '',
-                    condPgto: condPgtoMatch ? condPgtoMatch[1].trim() : '',
-                    status: statusMatch ? statusMatch[1].trim() : '',
-                    dataEntrega: dataEntregaMatch ? dataEntregaMatch[1].trim() : '',
-                    cotacao: cotacaoMatch ? cotacaoMatch[1].trim() : ''
-                  }
-                };
-              } else if (inovafarmaMatch) {
-                let name = inovafarmaMatch[1].trim();
-                const truncateKeywords = [
-                  'CNPJ', 'Nome Fantasia', 'Nome', 'Endereço', 'Endereco', 'IE:', 'Telefone'
-                ];
-                truncateKeywords.forEach(kw => {
-                  const idx = name.toLowerCase().indexOf(kw.toLowerCase());
-                  if (idx !== -1) {
-                    name = name.substring(0, idx).trim();
-                  }
-                });
-                name = name.replace(/[\s\-–—]+$/, '').trim();
+              for (let lineIdx = 0; lineIdx < pageLines.length; lineIdx++) {
+                const line = pageLines[lineIdx];
+                const trimmedLine = line.trim();
+                if (!trimmedLine) continue;
 
-                let cnpj = '';
-                const cnpjMatch = pageText.match(/CNPJ:\s*([\d\.\/\-]+)/i);
-                if (cnpjMatch) {
-                  cnpj = cnpjMatch[1].trim().replace(/[^\d]/g, '');
-                }
+                // 1. Identify client block headers
+                // A. Nazaria Filial header
+                const filialMatch = trimmedLine.match(/Filial:\s*(\d+)\s+([\d\.\/\-]+)\s+([^\n]+)/i);
+                
+                // B. A7 Pharma Código header
+                const codigoMatch = trimmedLine.match(/Cód(?:igo)?:\s*([\d\.]+)/i);
+                
+                // C. A7 Pharma Unidade header
+                const unidadeMatch = trimmedLine.match(/Unidade:\s*(.*?)(?=\s*CNPJ:|$)/i);
+                
+                // D. INOVAFARMA header
+                const inovafarmaMatch = trimmedLine.match(/Razão\s+Social:\s*([^\n]+)/i);
 
-                const obsMatch = pageText.match(/Observação:\s*([^\n]+)/i) || pageText.match(/Observacao:\s*([^\n]+)/i);
-                let fornecedor = obsMatch ? obsMatch[1].trim() : '';
-                if (fornecedor) {
-                  const truncKw = ['Pedido', 'Data', 'Nome'];
-                  truncKw.forEach(kw => {
-                    const idx = fornecedor.toLowerCase().indexOf(kw.toLowerCase());
+                if (filialMatch) {
+                  const filialNum = filialMatch[1];
+                  const cnpjRaw = filialMatch[2];
+                  const nameRaw = filialMatch[3];
+                  const cnpj = cnpjRaw.replace(/[^\d]/g, '');
+                  
+                  let name = nameRaw;
+                  const truncateKeywords = [
+                    'Forma de Pagamento', 'Bairro', 'Endereço', 'Endereco', 
+                    'Cep', 'Cidade', 'UF', 'Numero Pedido', 'Dt. Emissão', 'Dt. Emissao'
+                  ];
+                  truncateKeywords.forEach(kw => {
+                    const idx = name.toLowerCase().indexOf(kw.toLowerCase());
                     if (idx !== -1) {
-                      fornecedor = fornecedor.substring(0, idx).trim();
+                      name = name.substring(0, idx).trim();
                     }
                   });
-                }
-                if (!fornecedor) fornecedor = 'INOVAFARMA';
-
-                const pedidoMatch = pageText.match(/Pedido\s*(?:nº|no|num)?:\s*(\d+)/i);
-
-                clientObj = {
-                  clientName: name,
-                  cnpj: cnpj,
-                  items: [],
-                  headerInfo: {
-                    fornecedor: fornecedor,
-                    condPgto: '',
-                    status: 'Pendente',
-                    dataEntrega: '',
-                    cotacao: pedidoMatch ? `Pedido #${pedidoMatch[1]}` : 'INOVAFARMA'
-                  }
-                };
-              }
-              
-              // Handle context carry over or fallback
-              if (!clientObj) {
-                if (lastDetectedClient) {
-                  // Carry over last client info to this page
-                  clientObj = {
-                    clientName: lastDetectedClient.clientName,
-                    cnpj: lastDetectedClient.cnpj,
+                  name = name.replace(/[\s\-–—]+$/, '').trim();
+                  
+                  currentClientObj = {
+                    clientName: name,
+                    cnpj: cnpj,
                     items: [],
-                    headerInfo: { ...lastDetectedClient.headerInfo }
+                    headerInfo: {
+                      fornecedor: 'NAZARIA DISTRIBUIDORA',
+                      condPgto: '',
+                      status: 'Pendente',
+                      dataEntrega: '',
+                      cotacao: `Filial ${filialNum}`
+                    }
                   };
-                } else {
-                  clientObj = {
+                  importResults.push(currentClientObj);
+                  unmatchedBuffer = [];
+                  
+                  // Try to find the exact client in allClients database
+                  const matchedClient = allClients.find(c => {
+                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                    if (cnpj && dbCnpj === cnpj) return true;
+                    return c.name.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(c.name.toLowerCase());
+                  });
+                  if (matchedClient) {
+                    currentClientObj.client = matchedClient;
+                    currentClientObj.clientName = matchedClient.name;
+                  }
+                  continue;
+                }
+
+                if (codigoMatch) {
+                  const orderCode = codigoMatch[1];
+                  currentClientObj = {
                     clientName: 'Cliente Não Identificado',
                     cnpj: '',
                     items: [],
-                    headerInfo: { fornecedor: '', condPgto: '', status: '', dataEntrega: '', cotacao: '' }
+                    headerInfo: {
+                      fornecedor: '',
+                      condPgto: '',
+                      status: 'Pendente',
+                      dataEntrega: '',
+                      cotacao: `Pedido #${orderCode}`
+                    }
                   };
+                  importResults.push(currentClientObj);
+                  unmatchedBuffer = [];
+                  continue;
                 }
-              } else {
-                lastDetectedClient = clientObj;
-              }
-              
-              // Try to find the exact client in allClients database
-              const targetCnpj = clientObj.cnpj;
-              const targetName = clientObj.clientName.toLowerCase();
-              const matchedClient = allClients.find(c => {
-                const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
-                if (targetCnpj && dbCnpj === targetCnpj) return true;
-                return c.name.toLowerCase().includes(targetName) || targetName.includes(c.name.toLowerCase());
-              });
-              if (matchedClient) {
-                clientObj.client = matchedClient;
-                // Use matched client name for visual consistency
-                clientObj.clientName = matchedClient.name;
-              }
-              
-              // 2. Extract products on this page
-              const pageLines = pageText.split('\n');
-              const pageProductsFound: any[] = [];
-              
-              // Pattern A: Nazaria format line matcher
-              // Example: 7891025111832 APTAMIL 1 PREMIUM 400G DANONE UN 1 X 1 3
-              const nazariaProdRegex = /(\d{8,14})\s+(.*?)\s+([A-Z0-9\s.\-]+)\s+([A-Z]{1,3})\s+(\d+(?:\s*[xX]\s*\d+)?)\s+(\d+)/;
-              
-              // Pattern B: A7 Pharma percent format
-              const productRegexPercent = /(\d{8,14})\s+([^\n]*?)\s+([\d\.,]+\s*%)\s+([\d\.]+)\s+([\d\.]+,\d{2})/;
-              
-              // Pattern C: Standard generic product regex
-              const productRegexNormal = /(\d{8,14})\s+([^\n]*?)\s+([\d\.]+)\s+([\d\.]+,\d{2})/;
-              
-              // Pattern D: INOVAFARMA format
-              // Example: 2296901 7891150037465 440507 COND SEDA 325ML CACHOS DEFINIDOS UNILEVER DO BRASIL 0 6 11,51 69,06
-              // Example without supplier code: 2297201 7891150037328 COND SEDA 325ML LISO PERFEITO UNILEVER DO BRASIL 0 6 7,21 43,26
-              const inovafarmaProdRegex = /^(\d+)\s+(\d{13})\s+(?:(\d{4,8})\s+)?(.*?)\s+([\s\-]?\d+)\s+(\d+)\s+([\d\.]+,\d{2})\s+([\d\.]+,\d{2})$/;
-              
-              pageLines.forEach((line) => {
-                const trimmedLine = line.trim();
-                
-                // 1. Let's test INOVAFARMA product format FIRST to prevent greedy fallback matchers (like productRegexNormal matching on internal customer codes)
+
+                if (unidadeMatch) {
+                  const nameRaw = unidadeMatch[1].trim();
+                  const cnpjMatch = trimmedLine.match(/CNPJ:\s*([\d\.\/\-]+)/i);
+                  const cnpj = cnpjMatch ? cnpjMatch[1].trim().replace(/[^\d]/g, '') : '';
+                  
+                  if (!currentClientObj) {
+                    currentClientObj = {
+                      clientName: nameRaw,
+                      cnpj: cnpj,
+                      items: [],
+                      headerInfo: { fornecedor: '', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: '' }
+                    };
+                    importResults.push(currentClientObj);
+                  } else {
+                    currentClientObj.clientName = nameRaw;
+                    currentClientObj.cnpj = cnpj;
+                  }
+
+                  unmatchedBuffer = [];
+
+                  // Try to find the exact client in allClients database
+                  const matchedClient = allClients.find(c => {
+                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                    if (cnpj && dbCnpj === cnpj) return true;
+                    return c.name.toLowerCase().includes(nameRaw.toLowerCase()) || nameRaw.toLowerCase().includes(c.name.toLowerCase());
+                  });
+                  if (matchedClient) {
+                    currentClientObj.client = matchedClient;
+                    currentClientObj.clientName = matchedClient.name;
+                  }
+                  continue;
+                }
+
+                if (inovafarmaMatch) {
+                  let name = inovafarmaMatch[1].trim();
+                  const truncateKeywords = [
+                    'CNPJ', 'Nome Fantasia', 'Nome', 'Endereço', 'Endereco', 'IE:', 'Telefone'
+                  ];
+                  truncateKeywords.forEach(kw => {
+                    const idx = name.toLowerCase().indexOf(kw.toLowerCase());
+                    if (idx !== -1) {
+                      name = name.substring(0, idx).trim();
+                    }
+                  });
+                  name = name.replace(/[\s\-–—]+$/, '').trim();
+
+                  let cnpj = '';
+                  const cnpjMatch = trimmedLine.match(/CNPJ:\s*([\d\.\/\-]+)/i);
+                  if (cnpjMatch) {
+                    cnpj = cnpjMatch[1].trim().replace(/[^\d]/g, '');
+                  }
+
+                  currentClientObj = {
+                    clientName: name,
+                    cnpj: cnpj,
+                    items: [],
+                    headerInfo: {
+                      fornecedor: 'INOVAFARMA',
+                      condPgto: '',
+                      status: 'Pendente',
+                      dataEntrega: '',
+                      cotacao: 'INOVAFARMA'
+                    }
+                  };
+                  importResults.push(currentClientObj);
+                  unmatchedBuffer = [];
+
+                  const matchedClient = allClients.find(c => {
+                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                    if (cnpj && dbCnpj === cnpj) return true;
+                    return c.name.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(c.name.toLowerCase());
+                  });
+                  if (matchedClient) {
+                    currentClientObj.client = matchedClient;
+                    currentClientObj.clientName = matchedClient.name;
+                  }
+                  continue;
+                }
+
+                // If we match minor header fields
+                if (currentClientObj) {
+                  const fornecedorMatch = trimmedLine.match(/Fornecedor:\s*(.*?)(?:Cond\.|$)/i);
+                  if (fornecedorMatch) {
+                    currentClientObj.headerInfo.fornecedor = fornecedorMatch[1].trim();
+                  }
+                  
+                  const condPgtoMatch = trimmedLine.match(/Cond\.\s*Pgto\.?:\s*(.*?)(?:Status|$)/i);
+                  if (condPgtoMatch) {
+                    currentClientObj.headerInfo.condPgto = condPgtoMatch[1].trim();
+                  }
+
+                  const statusMatch = trimmedLine.match(/Status:\s*(.*?)(?:Data|$)/i);
+                  if (statusMatch) {
+                    currentClientObj.headerInfo.status = statusMatch[1].trim();
+                  }
+
+                  const dataEntregaMatch = trimmedLine.match(/Data Entrega:\s*([\d/]+\s*[\d:]*)/i);
+                  if (dataEntregaMatch) {
+                    currentClientObj.headerInfo.dataEntrega = dataEntregaMatch[1].trim();
+                  }
+
+                  const cotacaoMatch = trimmedLine.match(/Cotação:\s*(.*?)(?:\n|$)/i);
+                  if (cotacaoMatch && cotacaoMatch[1].trim()) {
+                    currentClientObj.headerInfo.cotacao = cotacaoMatch[1].trim();
+                  }
+
+                  // If any of these headers were found on the line, we don't treat it as description or product
+                  if (fornecedorMatch || condPgtoMatch || statusMatch || dataEntregaMatch || cotacaoMatch) {
+                    continue;
+                  }
+                }
+
+                // 2. Check for product patterns
+                // A. INOVAFARMA product pattern
+                const inovafarmaProdRegex = /^(\d+)\s+(\d{13})\s+(?:(\d{4,8})\s+)?(.*?)\s+([\s\-]?\d+)\s+(\d+)\s+([\d\.]+,\d{2})\s+([\d\.]+,\d{2})$/;
                 const inovafarmaMatchRow = trimmedLine.match(inovafarmaProdRegex);
                 if (inovafarmaMatchRow) {
                   const ean = normalizeEAN(inovafarmaMatchRow[2]);
                   const desc = inovafarmaMatchRow[4].trim();
                   const quantity = parseInt(inovafarmaMatchRow[6]);
                   const priceVal = parseFloat(inovafarmaMatchRow[7].replace(/\./g, '').replace(',', '.'));
-                  pageProductsFound.push({ ean, desc, quantity, price: priceVal });
-                  return;
+                  
+                  if (!currentClientObj) {
+                    currentClientObj = {
+                      clientName: 'Cliente Não Identificado',
+                      cnpj: '',
+                      items: [],
+                      headerInfo: { fornecedor: 'INOVAFARMA', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: 'INOVAFARMA' }
+                    };
+                    importResults.push(currentClientObj);
+                  }
+
+                  const product = allProducts.find(prod => normalizeEAN(prod.ean) === ean);
+                  if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
+                    currentClientObj.items.push({
+                      ean,
+                      quantity: isNaN(quantity) ? 1 : quantity,
+                      description: product?.description || desc,
+                      found: !!product,
+                      product: product,
+                      price: priceVal || product?.finalPrice || 0
+                    });
+                  }
+                  unmatchedBuffer = [];
+                  continue;
                 }
 
-                // 2. Let's test Nazaria
+                // B. A7 Pharma Pedido de Compra / Drogarias Ultra Popular pattern
+                // We match: EAN, Price, Discount%, Qtd, Total
+                const regexA7 = /\b(\d{8,14})\b.*?\b(\d+[\d\.,]*)\s+(\d+[\d\.,]*\s*%)\s+(\d+)\s+(\d+[\d\.,]*)\b/;
+                const matchA7 = trimmedLine.match(regexA7);
+                if (matchA7) {
+                  const ean = normalizeEAN(matchA7[1]);
+                  const eanStr = matchA7[1];
+                  const eanIndex = trimmedLine.indexOf(eanStr);
+                  const priceStr = matchA7[2];
+                  const priceIndex = trimmedLine.indexOf(priceStr, eanIndex + eanStr.length);
+
+                  const partBefore = trimmedLine.substring(0, eanIndex).trim();
+                  const partBetween = trimmedLine.substring(eanIndex + eanStr.length, priceIndex).trim();
+
+                  const quantity = parseInt(matchA7[4]);
+                  const priceVal = parseFloat(matchA7[2].replace(/\./g, '').replace(',', '.'));
+
+                  // Extract description from previous unmatched line(s) and current line parts
+                  let desc = partBetween || partBefore;
+                  // If we have unmatched lines in buffer, append them!
+                  if (unmatchedBuffer.length > 0) {
+                    const previousDesc = unmatchedBuffer.join(' ');
+                    desc = previousDesc + (desc ? ' ' + desc : '');
+                  }
+                  desc = desc.trim();
+
+                  // Clean description of trailing or leading junk (like manufacturer code or extra numbers)
+                  const cleanKeywords = ['UNILEVER BRASIL', 'UNILEVER', 'LTDA', 'BRASIL', 'INDUSTRIAL'];
+                  cleanKeywords.forEach(kw => {
+                    const regexClean = new RegExp('\\b' + kw + '\\b', 'gi');
+                    desc = desc.replace(regexClean, '');
+                  });
+                  desc = desc.replace(/\s+/g, ' ').trim();
+
+                  if (!currentClientObj) {
+                    currentClientObj = {
+                      clientName: 'Cliente Não Identificado',
+                      cnpj: '',
+                      items: [],
+                      headerInfo: { fornecedor: '', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: '' }
+                    };
+                    importResults.push(currentClientObj);
+                  }
+
+                  const product = allProducts.find(prod => normalizeEAN(prod.ean) === ean);
+                  if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
+                    currentClientObj.items.push({
+                      ean,
+                      quantity: isNaN(quantity) ? 1 : quantity,
+                      description: product?.description || desc,
+                      found: !!product,
+                      product: product,
+                      price: priceVal || product?.finalPrice || 0
+                    });
+                  }
+                  unmatchedBuffer = [];
+                  continue;
+                }
+
+                // C. Nazaria product pattern
+                const nazariaProdRegex = /(\d{8,14})\s+(.*?)\s+([A-Z0-9\s.\-]+)\s+([A-Z]{1,3})\s+(\d+(?:\s*[xX]\s*\d+)?)\s+(\d+)/;
                 const nazariaMatch = trimmedLine.match(nazariaProdRegex);
                 if (nazariaMatch) {
                   const ean = normalizeEAN(nazariaMatch[1]);
                   const desc = nazariaMatch[2].trim();
                   const quantity = parseInt(nazariaMatch[6]);
-                  pageProductsFound.push({ ean, desc, quantity, price: 0 });
-                  return;
-                }
-                
-                // 3. Next, let's test percent format
-                const percentMatch = trimmedLine.match(productRegexPercent);
-                if (percentMatch) {
-                  const ean = normalizeEAN(percentMatch[1]);
-                  const rawDesc = percentMatch[2].trim();
-                  const quantityStr = percentMatch[4].replace(/\./g, '');
-                  const quantity = parseInt(quantityStr);
-                  
-                  // Extract price
-                  const priceMatch = rawDesc.match(/([\d\.]+,\d{2})\s*$/);
-                  let priceVal = 0;
-                  let description = rawDesc;
-                  if (priceMatch) {
-                    priceVal = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
-                    description = rawDesc.substring(0, priceMatch.index).trim();
-                  } else {
-                    const totalVal = parseFloat(percentMatch[5].replace(/\./g, '').replace(',', '.'));
-                    if (!isNaN(totalVal) && quantity > 0) {
-                      priceVal = totalVal / quantity;
-                    }
+
+                  if (!currentClientObj) {
+                    currentClientObj = {
+                      clientName: 'Cliente Não Identificado',
+                      cnpj: '',
+                      items: [],
+                      headerInfo: { fornecedor: 'NAZARIA DISTRIBUIDORA', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: '' }
+                    };
+                    importResults.push(currentClientObj);
                   }
-                  pageProductsFound.push({ ean, desc: description, quantity, price: priceVal });
-                  return;
+
+                  const product = allProducts.find(prod => normalizeEAN(prod.ean) === ean);
+                  if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
+                    currentClientObj.items.push({
+                      ean,
+                      quantity: isNaN(quantity) ? 1 : quantity,
+                      description: product?.description || desc,
+                      found: !!product,
+                      product: product,
+                      price: product?.finalPrice || 0
+                    });
+                  }
+                  unmatchedBuffer = [];
+                  continue;
                 }
-                
-                // 4. Next, let's test normal product format
+
+                // D. Standard generic product regex
+                const productRegexNormal = /(\d{8,14})\s+([^\n]*?)\s+([\d\.]+)\s+([\d\.]+,\d{2})/;
                 const normalMatch = trimmedLine.match(productRegexNormal);
                 if (normalMatch) {
                   const ean = normalizeEAN(normalMatch[1]);
                   const desc = normalMatch[2].trim();
                   const quantity = parseInt(normalMatch[3].replace(/\./g, ''));
                   const priceVal = parseFloat(normalMatch[4].replace(/\./g, '').replace(',', '.'));
-                  pageProductsFound.push({ ean, desc, quantity, price: priceVal });
-                  return;
-                }
-              });
-              
-              // Fallback EAN scan on this page if no products found with precise regexes
-              if (pageProductsFound.length === 0) {
-                const eanRegex = /\b\d{8,14}\b/g;
-                const eanMatches = Array.from(pageText.matchAll(eanRegex));
-                
-                eanMatches.forEach((match, idx) => {
-                  const rawEan = match[0];
-                  const ean = normalizeEAN(rawEan);
-                  const startPos = match.index || 0;
-                  const endPos = eanMatches[idx + 1] ? eanMatches[idx + 1].index : pageText.length;
-                  const blockText = pageText.substring(startPos, endPos).trim();
-                  
-                  const qpMatch = blockText.match(/([\d\.]+)\s+([\d\.]+,\d{2})/);
-                  if (qpMatch) {
-                    const quantity = parseInt(qpMatch[1].replace(/\./g, ''));
-                    const priceVal = parseFloat(qpMatch[2].replace(/\./g, '').replace(',', '.'));
-                    const description = blockText.substring(rawEan.length, qpMatch.index).trim();
-                    pageProductsFound.push({ ean, desc: description, quantity, price: priceVal });
-                  } else {
-                    const qMatch = blockText.match(/([\d\.]+)\s*$/);
-                    if (qMatch) {
-                      const quantity = parseInt(qMatch[1].replace(/\./g, ''));
-                      const description = blockText.substring(rawEan.length, qMatch.index).trim();
-                      pageProductsFound.push({ ean, desc: description, quantity, price: 0 });
-                    }
+
+                  if (!currentClientObj) {
+                    currentClientObj = {
+                      clientName: 'Cliente Não Identificado',
+                      cnpj: '',
+                      items: [],
+                      headerInfo: { fornecedor: '', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: '' }
+                    };
+                    importResults.push(currentClientObj);
                   }
-                });
-              }
-              
-              // Populate the products into clientObj
-              pageProductsFound.forEach(p => {
-                const product = allProducts.find(prod => normalizeEAN(prod.ean) === p.ean);
-                
-                // Ensure no duplicate items on the same page
-                if (!clientObj.items.find((item: any) => normalizeEAN(item.ean) === p.ean)) {
-                  clientObj.items.push({
-                    ean: p.ean,
-                    quantity: isNaN(p.quantity) ? 1 : p.quantity,
-                    description: product?.description || p.desc,
-                    found: !!product,
-                    product: product,
-                    price: p.price || product?.finalPrice || 0
-                  });
+
+                  const product = allProducts.find(prod => normalizeEAN(prod.ean) === ean);
+                  if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
+                    currentClientObj.items.push({
+                      ean,
+                      quantity: isNaN(quantity) ? 1 : quantity,
+                      description: product?.description || desc,
+                      found: !!product,
+                      product: product,
+                      price: priceVal || product?.finalPrice || 0
+                    });
+                  }
+                  unmatchedBuffer = [];
+                  continue;
                 }
-              });
-              
-              if (clientObj.items.length > 0) {
-                importResults.push(clientObj);
+
+                // If the line is a summary or noise line, ignore it and clear unmatched buffer
+                if (
+                  trimmedLine.toLowerCase().includes('totais') ||
+                  trimmedLine.toLowerCase().includes('total') ||
+                  trimmedLine.toLowerCase().includes('desconto médio') ||
+                  trimmedLine.toLowerCase().includes('página') ||
+                  trimmedLine.toLowerCase().includes('alpha7') ||
+                  trimmedLine.toLowerCase().includes('a7 pharma') ||
+                  trimmedLine.includes('http://') ||
+                  trimmedLine.includes('www.') ||
+                  trimmedLine.includes('-----') ||
+                  trimmedLine.startsWith('Cód. Barras') ||
+                  trimmedLine.startsWith('Preço Compra')
+                ) {
+                  unmatchedBuffer = [];
+                  continue;
+                }
+
+                // If it is just an unmatched text line, collect it in the buffer as a potential description part
+                if (trimmedLine.length > 2) {
+                  unmatchedBuffer.push(trimmedLine);
+                }
               }
             }
 
-            // 3. Merge identical clients
+            // Merge identical clients
             const mergedResults: any[] = [];
             importResults.forEach(res => {
               const existing = mergedResults.find(m => 
