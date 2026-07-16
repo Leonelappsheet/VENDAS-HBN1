@@ -5,8 +5,42 @@ import axios from "axios";
 import crypto from "crypto";
 import cors from "cors";
 import dotenv from "dotenv";
+import { GoogleGenAI, Type } from "@google/genai";
 
 dotenv.config();
+
+let aiClient: GoogleGenAI | null = null;
+
+function getGeminiClient(): GoogleGenAI {
+  if (!aiClient) {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+      throw new Error("A chave de API do Gemini (GEMINI_API_KEY) não está configurada nos segredos.");
+    }
+    aiClient = new GoogleGenAI({
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+  }
+  return aiClient;
+}
+
+function handleGeminiError(error: any, res: any) {
+  console.error("Erro na API do Gemini:", error);
+  const errMsg = error.message || String(error);
+  
+  if (errMsg.includes("leaked") || errMsg.includes("403") || errMsg.includes("PERMISSION_DENIED") || errMsg.includes("API key")) {
+    return res.status(403).json({
+      error: "Sua chave de API do Gemini (GEMINI_API_KEY) foi detectada pelo Google como vazada (leaked) ou inválida. Por favor, acesse o menu 'Settings > Secrets' no AI Studio e insira uma nova chave de API válida para habilitar as funções de Inteligência Artificial."
+    });
+  }
+  
+  return res.status(500).json({ error: errMsg });
+}
 
 const app = express();
 const apiRouter = express.Router();
@@ -102,6 +136,158 @@ const isAdmin = (email: string) => {
 };
 
 // API Routes on apiRouter
+apiRouter.post("/gemini/scan-order", async (req, res) => {
+  try {
+    const { image } = req.body;
+    if (!image) {
+      return res.status(400).json({ error: "Imagem base64 não fornecida." });
+    }
+
+    const ai = getGeminiClient();
+
+    let base64Data = image;
+    let mimeType = "image/jpeg";
+
+    if (image.startsWith("data:")) {
+      const match = image.match(/^data:([^;]+);base64,(.*)$/);
+      if (match) {
+        mimeType = match[1];
+        base64Data = match[2];
+      }
+    }
+
+    console.log(`[Gemini OCR] Escaneando imagem de pedido. MIME: ${mimeType}, Tamanho base64: ${base64Data.length}`);
+
+    const prompt = `Você é um sistema especialista em OCR e extração de dados para pedidos de compra farmacêuticos e de varejo no Brasil.
+Analise a imagem fornecida do pedido de compra (Pedido de Compra / Espelho do Pedido).
+
+Extraia todos os pedidos presentes na imagem. Observe que um único documento ou imagem pode conter múltiplos blocos de pedidos para lojas/unidades/filiais diferentes, caracterizadas por diferentes números de CNPJ ou nomes de lojas (ex: "ULTRA POPULAR TERESINA C01 - HIPER FARMA LTDA", "ULTRA POPULAR TERESINA C02").
+
+Para cada bloco de pedido/cliente separado encontrado na imagem:
+1. Extraia o nome da loja/cliente (clientName - ex: "ULTRA POPULAR TERESINA C01 - HIPER FARMA LTDA").
+2. Extraia o CNPJ (cnpj - apenas números ou formato padrão com pontuação, ex: "29474162004483" ou "29.474.162/0044-83").
+3. Extraia as informações do cabeçalho (headerInfo) se houver:
+   - fornecedor: Nome da indústria ou distribuidor (fornecedor/fabricante, ex: "NAZARIA DIST. PROD. FARMACEUTICOS").
+   - condPgto: Condição de pagamento se houver (ex: "40/50/60 Dias").
+   - status: Status do pedido se houver (ex: "Confirmado" ou "Pendente").
+   - dataEntrega: Data de entrega se houver (ex: "14/07/2026").
+   - cotacao: Número do pedido ou cotação se houver (ex: "1.852.805").
+4. Extraia todos os itens de produto listados nesse bloco de pedido. Para cada item, extraia:
+   - ean: Código de barras / EAN (normalmente de 13 dígitos, mas pode conter de 8 a 14 dígitos, somente números).
+   - quantity: Quantidade pedida (Qtd / Quantidade) como número inteiro (ex: 5 ou 14).
+   - description: Descrição exata do produto como escrita (ex: "LEITE DANONE APTAMIL PREMIUM 1 0-6M 800G").
+   - price: Preço de compra / unitário como número decimal/float (ex: 53.93).
+   - manufacturer: Fabricante do produto se houver (ex: "DANONE" ou "UNILEVER").
+
+Certifique-se de escanear todos os blocos e produtos visíveis na imagem. Não omita nenhum item.`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: mimeType,
+              data: base64Data
+            }
+          },
+          {
+            text: prompt
+          }
+        ]
+      },
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              clientName: {
+                type: Type.STRING,
+                description: "Name of the client store/unidade"
+              },
+              cnpj: {
+                type: Type.STRING,
+                description: "CNPJ of the client store/unidade"
+              },
+              headerInfo: {
+                type: Type.OBJECT,
+                properties: {
+                  fornecedor: { type: Type.STRING, description: "Supplier/Manufacturer/Distributor" },
+                  condPgto: { type: Type.STRING, description: "Payment condition" },
+                  status: { type: Type.STRING, description: "Status" },
+                  dataEntrega: { type: Type.STRING, description: "Delivery date" },
+                  cotacao: { type: Type.STRING, description: "Order code / cotacao number" }
+                }
+              },
+              items: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    ean: { type: Type.STRING, description: "EAN / Barcode" },
+                    quantity: { type: Type.INTEGER, description: "Quantity" },
+                    description: { type: Type.STRING, description: "Product description" },
+                    price: { type: Type.NUMBER, description: "Unit or purchase price" },
+                    manufacturer: { type: Type.STRING, description: "Manufacturer/Fabricante" }
+                  },
+                  required: ["ean", "quantity"]
+                }
+              }
+            },
+            required: ["clientName", "items"]
+          }
+        }
+      }
+    });
+
+    const resultText = response.text;
+    if (!resultText) {
+      return res.status(500).json({ error: "O Gemini não retornou nenhum resultado para a imagem fornecida." });
+    }
+
+    const parsedData = JSON.parse(resultText);
+    res.json(parsedData);
+  } catch (error: any) {
+    handleGeminiError(error, res);
+  }
+});
+
+apiRouter.post("/gemini/search-image", async (req, res) => {
+  try {
+    const { description, manufacturer } = req.body;
+    if (!description) {
+      return res.status(400).json({ error: "Descrição do produto não fornecida." });
+    }
+
+    const ai = getGeminiClient();
+    const prompt = `Encontre URLs de imagens diretas e de alta qualidade para o produto: ${description} ${manufacturer || ''}. 
+    Retorne uma lista JSON com exatamente 5 URLs de imagens funcionais que apontem diretamente para arquivos de imagem comuns (como jpg ou png). 
+    Seja preciso e evite sites que bloqueiam acesso direto. 
+    Apenas o JSON, nada mais. Formato: ["url1", "url2", ...]`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        tools: [{ googleSearch: {} }]
+      }
+    });
+
+    const text = response.text;
+    if (text) {
+      const urls = JSON.parse(text);
+      res.json(urls);
+    } else {
+      res.status(500).json({ error: "O Gemini não retornou nenhum resultado." });
+    }
+  } catch (error: any) {
+    handleGeminiError(error, res);
+  }
+});
+
 apiRouter.post("/product/update-image", async (req, res) => {
   try {
     const { id, imageUrl, sheetName } = req.body;

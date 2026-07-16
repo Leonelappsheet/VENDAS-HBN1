@@ -3,7 +3,6 @@ import { useNavigate, Navigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { dataService } from '../services/dataService';
 import { Product, Client, OrderItem, Favorite, Order, BannerMessage } from '../types';
-import { GoogleGenAI } from "@google/genai";
 import { 
   Search, 
   ChevronLeft, 
@@ -989,34 +988,30 @@ export default function ProductCatalog() {
       setSearchingImages(true);
       setSearchImages([]);
       
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const prompt = `Encontre URLs de imagens diretas e de alta qualidade para o produto: ${product.description} ${product.manufacturer}. 
-      Retorne uma lista JSON com exatamente 5 URLs de imagens funcionais que apontem diretamente para arquivos de imagem comuns (como jpg ou png). 
-      Seja preciso e evite sites que bloqueiam acesso direto. 
-      Apenas o JSON, nada mais. Formato: ["url1", "url2", ...]`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: {
-          responseMimeType: "application/json",
-          tools: [{ googleSearch: {} }]
-        } as any
+      const response = await fetch("/api/gemini/search-image", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          description: product.description,
+          manufacturer: product.manufacturer
+        })
       });
 
-      const text = response.text;
-      if (text) {
-        const urls = JSON.parse(text);
-        setSearchImages(urls);
-        if (urls.length === 0) {
-          toast.error('Nenhuma imagem encontrada pelo IA.');
-        }
-      } else {
-        toast.error('Ocorreu um erro ao processar a resposta da IA.');
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({ error: "Erro na resposta do servidor." }));
+        throw new Error(errData.error || "Erro na resposta do servidor.");
       }
-    } catch (error) {
+
+      const urls = await response.json();
+      setSearchImages(urls);
+      if (!urls || urls.length === 0) {
+        toast.error('Nenhuma imagem encontrada pela IA.');
+      }
+    } catch (error: any) {
       console.error('Gemini Search error:', error);
-      toast.error('Erro ao pesquisar imagens com IA.');
+      toast.error(`Erro ao pesquisar imagens com IA: ${error.message || error}`);
     } finally {
       setSearchingImages(false);
     }

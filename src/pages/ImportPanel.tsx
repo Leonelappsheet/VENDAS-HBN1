@@ -35,6 +35,35 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { REGIONALS, getRegionalLabel, RegionalKey } from '../constants/regionals';
 
+function inferManufacturer(desc: string): string | null {
+  const d = desc.toUpperCase();
+  if (d.includes('DOVE') || d.includes('REXONA') || d.includes('REX ') || d.includes('SEDA') || d.includes('CLOSE UP') || d.includes('CLOSEUP') || d.includes('CLEAR') || d.includes('BEAUTY PLANET') || d.includes('LUX') || d.includes('AXE')) {
+    return 'UNILEVER';
+  }
+  if (d.includes('HUGGIES') || d.includes('HUG ') || d.includes('PLENITUDE') || d.includes('PLEN ') || d.includes('KOTEX') || d.includes('INTIMUS')) {
+    return 'KIMBERLY CLARK';
+  }
+  if (d.includes('OMRON')) {
+    return 'OMRON';
+  }
+  if (d.includes('J&J') || d.includes('JOHNSON') || d.includes('HIPOGLOS') || d.includes('CAREFREE') || d.includes('SEMPRE LIVRE') || d.includes('LISTERINE') || d.includes('BAND-AID') || d.includes('BANDAID') || d.includes('NEUTROGENA') || d.includes('REACH')) {
+    return 'JOHNSON & JOHNSON';
+  }
+  if (d.includes('NIVEA')) {
+    return 'NIVEA';
+  }
+  if (d.includes('ELSEVE') || d.includes('LOREAL') || d.includes("L'OREAL") || d.includes('GARNIER')) {
+    return 'LOREAL';
+  }
+  if (d.includes('PAMPERS') || d.includes('ALWAYS') || d.includes('PANTENE') || d.includes('GILLETTE') || d.includes('ORAL-B') || d.includes('ORAL B') || d.includes('HEAD & SHOULDERS')) {
+    return 'P&G';
+  }
+  if (d.includes('COLGATE') || d.includes('PALMOLIVE') || d.includes('SORRISO') || d.includes('PROTEX')) {
+    return 'COLGATE';
+  }
+  return null;
+}
+
 export default function ImportPanel() {
   const { profile } = useAuth();
   const navigate = useNavigate();
@@ -51,6 +80,37 @@ export default function ImportPanel() {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedRegional, setSelectedRegional] = useState<string>('TIMON-MA');
   const [isProcessing, setIsProcessing] = useState(false);
+
+  const splitResultsByManufacturer = useCallback((resultsList: any[]): any[] => {
+    const finalSplit: any[] = [];
+    resultsList.forEach(res => {
+      // Group items of this result by product manufacturer
+      const groups: Record<string, any[]> = {};
+      res.items.forEach((item: any) => {
+        const manufacturer = (item.manufacturer || item.product?.manufacturer || 'OUTROS').trim().toUpperCase();
+        if (!groups[manufacturer]) {
+          groups[manufacturer] = [];
+        }
+        groups[manufacturer].push(item);
+      });
+
+      // Create a separate result block for each manufacturer
+      Object.entries(groups).forEach(([manufacturer, mItems]) => {
+        finalSplit.push({
+          ...res,
+          headerInfo: {
+            status: 'Pendente',
+            cotacao: 'IMPORTAÇÃO',
+            dataEntrega: new Date().toLocaleDateString('pt-BR'),
+            ...(res.headerInfo || {}),
+            fornecedor: manufacturer
+          },
+          items: mItems
+        });
+      });
+    });
+    return finalSplit;
+  }, []);
 
   const [showBulkImport, setShowBulkImport] = useState(false);
   const [bulkImportText, setBulkImportText] = useState('');
@@ -175,14 +235,17 @@ export default function ImportPanel() {
       })
     };
 
-    setResults([newResult]);
+    const splitResults = splitResultsByManufacturer([newResult]);
+    setResults(splitResults);
 
-    // Auto-check all found items
+    // Auto-check all found items across all split results
     const initialChecked = new Set<string>();
-    newResult.items.forEach((item, iIdx) => {
-      if (item.found) {
-        initialChecked.add(`0-${iIdx}`);
-      }
+    splitResults.forEach((res, cIdx) => {
+      res.items.forEach((item, iIdx) => {
+        if (item.found) {
+          initialChecked.add(`${cIdx}-${iIdx}`);
+        }
+      });
     });
     setCheckedItems(initialChecked);
 
@@ -335,15 +398,29 @@ export default function ImportPanel() {
                };
              }).filter(r => r.ean);
 
-            setResults([{
+            const splitResults = splitResultsByManufacturer([{
               clientName: 'Importação Manual',
               cnpj: '',
               items: mapped
             }]);
+            setResults(splitResults);
+
+            const initialChecked = new Set<string>();
+            splitResults.forEach((res, cIdx) => {
+              res.items.forEach((item: any, iIdx: number) => {
+                if (item.found) {
+                  initialChecked.add(`${cIdx}-${iIdx}`);
+                }
+              });
+            });
+            setCheckedItems(initialChecked);
+
             toast.success(`${mapped.length} itens identificados`);
           } catch (err) {
             console.error('Excel parse error:', err);
             toast.error('Erro ao ler planilha');
+          } finally {
+            setLoading(false);
           }
         };
         reader.readAsArrayBuffer(file);
@@ -414,10 +491,12 @@ export default function ImportPanel() {
             const importResults: any[] = [];
             let currentClientObj: any = null;
             let unmatchedBuffer: string[] = [];
+            let hbn1MultiItem: any = null;
 
             for (const pageObj of pageTexts) {
               const pageText = pageObj.text;
               const pageLines = pageText.split('\n');
+              let lastFilialNum = '';
               
               for (let lineIdx = 0; lineIdx < pageLines.length; lineIdx++) {
                 const line = pageLines[lineIdx];
@@ -425,22 +504,20 @@ export default function ImportPanel() {
                 if (!trimmedLine) continue;
 
                 // 1. Identify client block headers
-                // A. Nazaria Filial header
-                const filialMatch = trimmedLine.match(/Filial:\s*(\d+)\s+([\d\.\/\-]+)\s+([^\n]+)/i);
-                
-                // B. A7 Pharma Código header
-                const codigoMatch = trimmedLine.match(/Cód(?:igo)?:\s*([\d\.]+)/i);
-                
-                // C. A7 Pharma Unidade header
-                const unidadeMatch = trimmedLine.match(/Unidade:\s*(.*?)(?=\s*CNPJ:|$)/i);
-                
-                // D. INOVAFARMA header
-                const inovafarmaMatch = trimmedLine.match(/Razão\s+Social:\s*([^\n]+)/i);
+                // A. Nazaria Filial header & CNPJ / Client Name extraction (handles same-line or separate-line layouts)
+                const filialOnlyMatch = trimmedLine.match(/Filial:\s*(\d+)/i);
+                const nazariaCnpjMatch = trimmedLine.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})\s+([^\n]+)/);
 
-                if (filialMatch) {
-                  const filialNum = filialMatch[1];
-                  const cnpjRaw = filialMatch[2];
-                  const nameRaw = filialMatch[3];
+                if (filialOnlyMatch) {
+                  lastFilialNum = filialOnlyMatch[1];
+                  if (!nazariaCnpjMatch) {
+                    continue;
+                  }
+                }
+
+                if (nazariaCnpjMatch) {
+                  const cnpjRaw = nazariaCnpjMatch[1];
+                  const nameRaw = nazariaCnpjMatch[2];
                   const cnpj = cnpjRaw.replace(/[^\d]/g, '');
                   
                   let name = nameRaw;
@@ -456,6 +533,7 @@ export default function ImportPanel() {
                   });
                   name = name.replace(/[\s\-–—]+$/, '').trim();
                   
+                  const activeFilial = lastFilialNum || '';
                   currentClientObj = {
                     clientName: name,
                     cnpj: cnpj,
@@ -465,7 +543,7 @@ export default function ImportPanel() {
                       condPgto: '',
                       status: 'Pendente',
                       dataEntrega: '',
-                      cotacao: `Filial ${filialNum}`
+                      cotacao: activeFilial ? `Filial ${activeFilial}` : 'IMPORTAÇÃO'
                     }
                   };
                   importResults.push(currentClientObj);
@@ -483,6 +561,15 @@ export default function ImportPanel() {
                   }
                   continue;
                 }
+
+                // B. A7 Pharma Código header
+                const codigoMatch = trimmedLine.match(/Cód(?:igo)?:\s*([\d\.]+)/i);
+                
+                // C. A7 Pharma Unidade header
+                const unidadeMatch = trimmedLine.toLowerCase().includes('tot. unidade') ? null : trimmedLine.match(/Unidade:\s*(.*?)(?=\s*CNPJ:|$)/i);
+                
+                // D. INOVAFARMA header
+                const inovafarmaMatch = trimmedLine.match(/Razão\s+Social:\s*([^\n]+)/i);
 
                 if (codigoMatch) {
                   const orderCode = codigoMatch[1];
@@ -579,6 +666,66 @@ export default function ImportPanel() {
                     currentClientObj.client = matchedClient;
                     currentClientObj.clientName = matchedClient.name;
                   }
+                  continue;
+                }
+
+                // E. VENDAS HBN1 client header identification
+                const hbn1ClienteMatch = trimmedLine.match(/^Cliente:?\s+([^\n]+)/i);
+                if (hbn1ClienteMatch) {
+                  const nameRaw = hbn1ClienteMatch[1].trim();
+                  currentClientObj = {
+                    clientName: nameRaw,
+                    cnpj: '',
+                    items: [],
+                    headerInfo: {
+                      fornecedor: 'VENDAS HBN1',
+                      condPgto: '',
+                      status: 'Pendente',
+                      dataEntrega: '',
+                      cotacao: 'VENDAS HBN1'
+                    }
+                  };
+                  importResults.push(currentClientObj);
+                  unmatchedBuffer = [];
+
+                  // Try to find client by name
+                  const matchedClient = allClients.find(c => {
+                    const dbName = c.name ? c.name.toLowerCase() : '';
+                    const dbTradeName = c.tradeName ? c.tradeName.toLowerCase() : '';
+                    const searchName = nameRaw.toLowerCase();
+                    return dbName.includes(searchName) || searchName.includes(dbName) ||
+                           dbTradeName.includes(searchName) || searchName.includes(dbTradeName);
+                  });
+                  if (matchedClient) {
+                    currentClientObj.client = matchedClient;
+                    currentClientObj.clientName = matchedClient.name;
+                    if (matchedClient.cnpj) {
+                      currentClientObj.cnpj = matchedClient.cnpj.replace(/[^\d]/g, '');
+                    }
+                  }
+                  continue;
+                }
+
+                const hbn1CnpjMatch = trimmedLine.match(/^CNPJ:?\s+([\d\.\/\-]+)/i);
+                if (hbn1CnpjMatch && currentClientObj && currentClientObj.headerInfo?.fornecedor === 'VENDAS HBN1') {
+                  const cnpj = hbn1CnpjMatch[1].replace(/[^\d]/g, '');
+                  currentClientObj.cnpj = cnpj;
+
+                  // Re-evaluate client lookup with CNPJ
+                  const matchedClient = allClients.find(c => {
+                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                    return cnpj && dbCnpj === cnpj;
+                  });
+                  if (matchedClient) {
+                    currentClientObj.client = matchedClient;
+                    currentClientObj.clientName = matchedClient.name;
+                  }
+                  continue;
+                }
+
+                const hbn1PedidoMatch = trimmedLine.match(/N°\s*DO\s*PEDIDO\s+([^\n]+)/i);
+                if (hbn1PedidoMatch && currentClientObj && currentClientObj.headerInfo?.fornecedor === 'VENDAS HBN1') {
+                  currentClientObj.headerInfo.cotacao = hbn1PedidoMatch[1].trim();
                   continue;
                 }
 
@@ -710,11 +857,12 @@ export default function ImportPanel() {
                 }
 
                 // C. Nazaria product pattern
-                const nazariaProdRegex = /(\d{8,14})\s+(.*?)\s+([A-Z0-9\s.\-]+)\s+([A-Z]{1,3})\s+(\d+(?:\s*[xX]\s*\d+)?)\s+(\d+)/;
+                const nazariaProdRegex = /(\d{8,14})\s+(.*)\s+(\S+)\s+([A-Z]{2,3})\s+(\d+(?:\s*[xX]\s*\d+)?)\s+(\d+)(?:\s+[\d\.,]+)*/;
                 const nazariaMatch = trimmedLine.match(nazariaProdRegex);
                 if (nazariaMatch) {
                   const ean = normalizeEAN(nazariaMatch[1]);
                   const desc = nazariaMatch[2].trim();
+                  const manufacturer = nazariaMatch[3].trim();
                   const quantity = parseInt(nazariaMatch[6]);
 
                   if (!currentClientObj) {
@@ -734,12 +882,116 @@ export default function ImportPanel() {
                       quantity: isNaN(quantity) ? 1 : quantity,
                       description: product?.description || desc,
                       found: !!product,
-                      product: product,
-                      price: product?.finalPrice || 0
+                      product: product ? { ...product, manufacturer: product.manufacturer || manufacturer } : { manufacturer },
+                      price: product?.finalPrice || 0,
+                      manufacturer: manufacturer
                     });
                   }
                   unmatchedBuffer = [];
                   continue;
+                }
+
+                // E. VENDAS HBN1 product patterns
+                // 1) Single-line match (Code EAN Description originalPrice discount finalPrice quantity subtotal)
+                const hbn1SingleMatch = trimmedLine.match(/^(\d+)\s+(\d{8,14})\s+(.*?)\s+R\$\s*([\d\.,]+)\s+([\d\.,]+%|[-–—])\s+R\$\s*([\d\.,]+)\s+(\d+)\s+R\$\s*([\d\.,]+)/i);
+                if (hbn1SingleMatch) {
+                  const code = hbn1SingleMatch[1];
+                  const ean = normalizeEAN(hbn1SingleMatch[2]);
+                  const desc = hbn1SingleMatch[3].trim();
+                  const quantity = parseInt(hbn1SingleMatch[7]);
+                  const priceVal = parseFloat(hbn1SingleMatch[6].replace(/\./g, '').replace(',', '.'));
+
+                  if (!currentClientObj) {
+                    currentClientObj = {
+                      clientName: 'Cliente Não Identificado',
+                      cnpj: '',
+                      items: [],
+                      headerInfo: { fornecedor: 'VENDAS HBN1', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: '' }
+                    };
+                    importResults.push(currentClientObj);
+                  }
+
+                  const product = allProducts.find(prod => normalizeEAN(prod.ean) === ean);
+                  const inferredMfr = product?.manufacturer || inferManufacturer(desc) || 'OUTROS';
+                  if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
+                    currentClientObj.items.push({
+                      ean,
+                      quantity: isNaN(quantity) ? 1 : quantity,
+                      description: product?.description || desc,
+                      found: !!product,
+                      product: product,
+                      price: priceVal || product?.finalPrice || 0,
+                      manufacturer: inferredMfr
+                    });
+                  }
+                  hbn1MultiItem = null;
+                  unmatchedBuffer = [];
+                  continue;
+                }
+
+                // 2) Multi-line start match (Starts with Code and 8-14 digit EAN, and description prefix but no "R$")
+                const hbn1StartMatch = trimmedLine.match(/^(\d+)\s+(\d{8,14})(?:\s+([^\n]+))?$/);
+                if (hbn1StartMatch && !trimmedLine.includes('R$')) {
+                  const code = hbn1StartMatch[1];
+                  const ean = normalizeEAN(hbn1StartMatch[2]);
+                  const desc = hbn1StartMatch[3] ? hbn1StartMatch[3].trim() : '';
+                  hbn1MultiItem = {
+                    code,
+                    ean,
+                    descParts: desc ? [desc] : []
+                  };
+                  unmatchedBuffer = [];
+                  continue;
+                }
+
+                // 3) Multi-line price line match (Matches price information line starting with "R$")
+                const hbn1PriceMatch = trimmedLine.match(/R\$\s*([\d\.,]+)\s+([\d\.,]+%|[-–—])\s+R\$\s*([\d\.,]+)\s+(\d+)\s+R\$\s*([\d\.,]+)/i);
+                if (hbn1PriceMatch && hbn1MultiItem) {
+                  const priceVal = parseFloat(hbn1PriceMatch[3].replace(/\./g, '').replace(',', '.'));
+                  const quantity = parseInt(hbn1PriceMatch[4]);
+                  const desc = hbn1MultiItem.descParts.join(' ').trim();
+                  const ean = hbn1MultiItem.ean;
+
+                  if (!currentClientObj) {
+                    currentClientObj = {
+                      clientName: 'Cliente Não Identificado',
+                      cnpj: '',
+                      items: [],
+                      headerInfo: { fornecedor: 'VENDAS HBN1', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: '' }
+                    };
+                    importResults.push(currentClientObj);
+                  }
+
+                  const product = allProducts.find(prod => normalizeEAN(prod.ean) === ean);
+                  const inferredMfr = product?.manufacturer || inferManufacturer(desc) || 'OUTROS';
+                  if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
+                    currentClientObj.items.push({
+                      ean,
+                      quantity: isNaN(quantity) ? 1 : quantity,
+                      description: product?.description || desc,
+                      found: !!product,
+                      product: product,
+                      price: priceVal || product?.finalPrice || 0,
+                      manufacturer: inferredMfr
+                    });
+                  }
+                  hbn1MultiItem = null;
+                  unmatchedBuffer = [];
+                  continue;
+                }
+
+                // 4) Multi-line description continuation match
+                if (hbn1MultiItem && !trimmedLine.includes('R$') && !trimmedLine.match(/^(\d+)\s+(\d{8,14})/)) {
+                  if (
+                    !trimmedLine.toLowerCase().includes('subtotal') &&
+                    !trimmedLine.toLowerCase().includes('desconto') &&
+                    !trimmedLine.toLowerCase().includes('total') &&
+                    !trimmedLine.toLowerCase().includes('página') &&
+                    !trimmedLine.toLowerCase().includes('emitido em')
+                  ) {
+                    hbn1MultiItem.descParts.push(trimmedLine);
+                    continue;
+                  }
                 }
 
                 // D. Standard generic product regex
@@ -791,6 +1043,7 @@ export default function ImportPanel() {
                   trimmedLine.startsWith('Preço Compra')
                 ) {
                   unmatchedBuffer = [];
+                  hbn1MultiItem = null;
                   continue;
                 }
 
@@ -826,37 +1079,142 @@ export default function ImportPanel() {
 
             // Filter out clients with no items
             const finalResults = mergedResults.filter(r => r.items.length > 0);
+            const splitFinalResults = splitResultsByManufacturer(finalResults);
 
-            if (finalResults.length > 0) {
-              setResults(finalResults);
+            if (splitFinalResults.length > 0) {
+              setResults(splitFinalResults);
               
               // Auto-check all found items across all clients
               const initialChecked = new Set<string>();
-              finalResults.forEach((res, cIdx) => {
+              splitFinalResults.forEach((res, cIdx) => {
                 res.items.forEach((item: any, iIdx: number) => {
                   if (item.found) initialChecked.add(`${cIdx}-${iIdx}`);
                 });
               });
               setCheckedItems(initialChecked);
               
-              toast.success(`${finalResults.length} clientes identificados no PDF`);
+              toast.success(`${splitFinalResults.length} pedidos de indústrias identificados no PDF`);
             } else {
               toast.error('Nenhum item identificado no PDF. Verifique o formato.');
             }
           } catch (err) {
             console.error('PDF parse error:', err);
             toast.error('Erro ao ler PDF');
+          } finally {
+            setLoading(false);
           }
         };
         reader.readAsArrayBuffer(file);
+      } else if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp') {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const base64Image = e.target?.result as string;
+            if (!base64Image) {
+              toast.error("Erro ao ler o arquivo de imagem.");
+              setLoading(false);
+              return;
+            }
+
+            toast.loading("Analisando imagem com Inteligência Artificial...", { id: "image-scan" });
+            const response = await fetch("/api/gemini/scan-order", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({ image: base64Image })
+            });
+
+            if (!response.ok) {
+              const errData = await response.json();
+              throw new Error(errData.error || "Erro na resposta do servidor.");
+            }
+
+            const rawOrders = await response.json();
+            if (!Array.isArray(rawOrders) || rawOrders.length === 0) {
+              toast.dismiss("image-scan");
+              toast.error("Nenhum pedido detectado na imagem.");
+              setLoading(false);
+              return;
+            }
+
+            // Map and validate extracted orders against local catalog and clients
+            const finalOrders = rawOrders.map((order: any) => {
+              const cleanCnpj = order.cnpj ? order.cnpj.replace(/[^\d]/g, '') : '';
+              
+              // Find matching client in database
+              const matchedClient = allClients.find(c => {
+                const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                return (cleanCnpj && dbCnpj === cleanCnpj) || 
+                       (order.clientName && c.name.toLowerCase().includes(order.clientName.toLowerCase())) ||
+                       (order.clientName && order.clientName.toLowerCase().includes(c.name.toLowerCase()));
+              });
+
+              const mappedItems = (order.items || []).map((item: any) => {
+                const ean = normalizeEAN(String(item.ean || ''));
+                const product = allProducts.find(p => normalizeEAN(p.ean) === ean);
+                const inferredMfr = product?.manufacturer || item.manufacturer || inferManufacturer(item.description || '') || 'OUTROS';
+                
+                return {
+                  ean,
+                  quantity: parseInt(item.quantity) || 1,
+                  description: product?.description || item.description || 'Produto não encontrado',
+                  found: !!product,
+                  product: product,
+                  price: parseFloat(item.price) || product?.finalPrice || 0,
+                  manufacturer: inferredMfr
+                };
+              }).filter((item: any) => item.ean);
+
+              return {
+                client: matchedClient || null,
+                clientName: matchedClient?.name || order.clientName || 'Cliente Não Identificado',
+                cnpj: cleanCnpj,
+                headerInfo: {
+                  fornecedor: order.headerInfo?.fornecedor || 'IMPORTAÇÃO IMAGEM',
+                  condPgto: order.headerInfo?.condPgto || '',
+                  status: order.headerInfo?.status || 'Pendente',
+                  dataEntrega: order.headerInfo?.dataEntrega || new Date().toLocaleDateString('pt-BR'),
+                  cotacao: order.headerInfo?.cotacao || 'SCAN'
+                },
+                items: mappedItems
+              };
+            }).filter((order: any) => order.items.length > 0);
+
+            const splitFinalResults = splitResultsByManufacturer(finalOrders);
+
+            if (splitFinalResults.length > 0) {
+              setResults(splitFinalResults);
+              
+              // Auto-check all found items across all clients
+              const initialChecked = new Set<string>();
+              splitFinalResults.forEach((res, cIdx) => {
+                res.items.forEach((item: any, iIdx: number) => {
+                  if (item.found) initialChecked.add(`${cIdx}-${iIdx}`);
+                });
+              });
+              setCheckedItems(initialChecked);
+              
+              toast.success(`${splitFinalResults.length} pedidos identificados na imagem!`, { id: "image-scan" });
+            } else {
+              toast.error('Nenhum item válido identificado na imagem.', { id: "image-scan" });
+            }
+          } catch (err: any) {
+            console.error('Image scan error:', err);
+            toast.error(`Erro ao analisar imagem: ${err.message || err}`, { id: "image-scan" });
+          } finally {
+            setLoading(false);
+          }
+        };
+        reader.readAsDataURL(file);
       } else {
-        toast.error('Formato não suportado. Use Excel, CSV ou PDF.');
+        toast.error('Formato não suportado. Use Excel, CSV, PDF ou Imagem (PNG/JPG).');
       }
     } catch (error) {
       console.error('Import error:', error);
       toast.error('Erro ao processar arquivo');
-    } finally {
       setLoading(false);
+    } finally {
       setIsDragging(false);
     }
   };
@@ -967,12 +1325,12 @@ export default function ImportPanel() {
       d.text('VENDAS HBN1', 105, 30, { align: 'center' });
       d.setFontSize(10);
       d.setFont('helvetica', 'normal');
-      d.text('COMPROVANTE DE PEDIDO \u2014 IMPORTA\u00C7\u00C3O', 105, 38, { align: 'center' });
+      d.text('COMPROVANTE DE PEDIDO ─ IMPORTAÇÃO', 105, 38, { align: 'center' });
       const region = getRegionalLabel(selectedRegional as RegionalKey);
       d.setFontSize(8);
-      const contactStr = `${region} \u2022 Tel: ${profile?.phone || '(86) 99964-7573'} \u2022 ${profile?.email || 'leonelamorimm@gmail.com'}`;
+      const contactStr = `${region} • Tel: ${profile?.phone || '(86) 99964-7573'} • ${profile?.email || 'leonelamorimm@gmail.com'}`;
       d.text(contactStr, 105, 43, { align: 'center' });
-      d.text(`${new Date().toLocaleString('pt-BR')} \u2022 ${total} pedido(s)`, 105, 48, { align: 'center' });
+      d.text(`${new Date().toLocaleString('pt-BR')} • ${total} pedido(s)`, 105, 48, { align: 'center' });
     };
 
     const drawClientData = (d: jsPDF, y: number, r: any) => {
@@ -1012,20 +1370,32 @@ export default function ImportPanel() {
     drawHeader(doc, 1, 1, clientCode);
     let currentY = drawClientData(doc, 55, res);
 
-    const manufacturer = res.headerInfo?.fornecedor || 'UNILEVER';
-    doc.setFillColor(255, 107, 0);
-    doc.rect(14, currentY, 182, 6, 'F');
-    doc.setFontSize(9);
-    doc.setTextColor(255, 255, 255);
-    doc.setFont('helvetica', 'bold');
-    doc.text(`FABRICANTE: ${manufacturer.toUpperCase()}`, 105, currentY + 4.5, { align: 'center' });
-    currentY += 6;
+    const groupedItems = selectedItems.reduce((acc: any, item) => {
+      const manufacturer = item.manufacturer || item.product?.manufacturer || 'OUTROS';
+      if (!acc[manufacturer]) acc[manufacturer] = [];
+      acc[manufacturer].push(item);
+      return acc;
+    }, {});
 
-      let calculatedPrecoSubtotal = 0;
-      let calculatedNoStock = 0;
-      let calculatedDiscount = 0;
+    Object.entries(groupedItems).forEach(([mName, mItems]: [string, any]) => {
+      if (currentY > 220) {
+        doc.addPage();
+        currentY = 20;
+      }
 
-      const tableData = selectedItems.map((item: any) => {
+      doc.setFillColor(255, 107, 0);
+      doc.rect(14, currentY, 182, 6, 'F');
+      doc.setFontSize(9);
+      doc.setTextColor(255, 255, 255);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`INDÚSTRIA: ${mName.toUpperCase()}`, 105, currentY + 4.5, { align: 'center' });
+      currentY += 6;
+
+      let mPrecoSubtotal = 0;
+      let mNoStock = 0;
+      let mDiscount = 0;
+
+      const tableData = mItems.map((item: any) => {
         const salePrice = item.product?.salePrice || item.price || 0;
         const finalPrice = item.product?.finalPrice || item.price || 0;
         const discVal = salePrice > 0 ? (1 - finalPrice / salePrice) * 100 : 0;
@@ -1036,10 +1406,10 @@ export default function ImportPanel() {
         const rowPrecoSubtotal = Math.round(salePrice * item.quantity * 100) / 100;
         const rowDiscount = Math.round((salePrice - finalPrice) * item.quantity * 100) / 100;
 
-        calculatedPrecoSubtotal += rowPrecoSubtotal;
-        calculatedDiscount += rowDiscount;
+        mPrecoSubtotal += rowPrecoSubtotal;
+        mDiscount += rowDiscount;
         if (!hasStock) {
-          calculatedNoStock += rowSubtotal;
+          mNoStock += rowSubtotal;
         }
 
         return [
@@ -1055,55 +1425,112 @@ export default function ImportPanel() {
         ];
       });
 
-    autoTable(doc, {
-      startY: currentY,
-      head: [['COD. \u25BC', 'EAN \u25BC', 'DESCRICAO \u25BC', 'PRECO \u25BC', 'DESC% \u25BC', 'PR.FINAL \u25BC', 'QT \u25BC', 'SUBTOTAL \u25BC', 'STATUS \u25BC']],
-      body: tableData,
-      theme: 'grid',
-      headStyles: { fillColor: [255, 107, 0], textColor: 255, fontSize: 7, fontStyle: 'bold', halign: 'center' },
-      styles: { fontSize: 7, cellPadding: 1.5, overflow: 'linebreak' },
-      columnStyles: {
-        0: { halign: 'center', cellWidth: 18 },
-        1: { halign: 'center', cellWidth: 24 },
-        2: { halign: 'left', cellWidth: 'auto' },
-        3: { halign: 'right', cellWidth: 18 },
-        4: { halign: 'center', cellWidth: 15 },
-        5: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 18 },
-        6: { halign: 'center', cellWidth: 10 },
-        7: { halign: 'right', fontStyle: 'bold', textColor: [200, 0, 0], cellWidth: 22 },
-        8: { halign: 'center', cellWidth: 20 }
-      },
-      didParseCell: (data) => {
-        if (data.section === 'body' && data.column.index === 8) {
-          if (data.cell.text[0] === 'OK') data.cell.styles.textColor = [0, 150, 0];
-          else { data.cell.styles.textColor = [200, 0, 0]; data.cell.styles.fontStyle = 'bold'; }
+      autoTable(doc, {
+        startY: currentY,
+        head: [['COD. ▼', 'EAN ▼', 'DESCRICAO ▼', 'PRECO ▼', 'DESC% ▼', 'PR.FINAL ▼', 'QT ▼', 'SUBTOTAL ▼', 'STATUS ▼']],
+        body: tableData,
+        theme: 'grid',
+        headStyles: { fillColor: [255, 107, 0], textColor: 255, fontSize: 7, fontStyle: 'bold', halign: 'center' },
+        styles: { fontSize: 7, cellPadding: 1.5, overflow: 'linebreak' },
+        columnStyles: {
+          0: { halign: 'center', cellWidth: 18 },
+          1: { halign: 'center', cellWidth: 24 },
+          2: { halign: 'left', cellWidth: 'auto' },
+          3: { halign: 'right', cellWidth: 18 },
+          4: { halign: 'center', cellWidth: 15 },
+          5: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 18 },
+          6: { halign: 'center', cellWidth: 10 },
+          7: { halign: 'right', fontStyle: 'bold', textColor: [200, 0, 0], cellWidth: 22 },
+          8: { halign: 'center', cellWidth: 20 }
+        },
+        didParseCell: (data) => {
+          if (data.section === 'body' && data.column.index === 8) {
+            if (data.cell.text[0] === 'OK') data.cell.styles.textColor = [0, 150, 0];
+            else { data.cell.styles.textColor = [200, 0, 0]; data.cell.styles.fontStyle = 'bold'; }
+          }
         }
+      });
+
+      currentY = (doc as any).lastAutoTable.finalY + 3;
+
+      const mSubtotalVal = Math.round(mPrecoSubtotal * 100) / 100;
+      const mNoStockVal = Math.round(mNoStock * 100) / 100;
+      const mDiscountVal = Math.round(mDiscount * 100) / 100;
+      const mTotalVal = Math.round((mPrecoSubtotal - mNoStock - mDiscount) * 100) / 100;
+
+      if (currentY > 255) {
+        doc.addPage();
+        currentY = 20;
+      }
+
+      const drawSummaryRow = (label: string, value: string, color: [number, number, number] = [0,0,0]) => {
+        doc.setFillColor(245, 245, 245);
+        doc.rect(110, currentY, 86, 5, 'F');
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(100, 100, 100);
+        doc.text(label, 114, currentY + 3.5);
+        doc.setTextColor(color[0], color[1], color[2]);
+        doc.text(value, 192, currentY + 3.5, { align: 'right' });
+        currentY += 5.5;
+      };
+
+      drawSummaryRow(`SUBTOTAL ${mName.toUpperCase()}`, formatCurrency(mSubtotalVal));
+      drawSummaryRow(`SEM ESTOQUE ${mName.toUpperCase()}`, formatCurrency(mNoStockVal), [200, 0, 0]);
+      drawSummaryRow(`DESCONTO ${mName.toUpperCase()}`, `-${formatCurrency(mDiscountVal)}`, [0, 150, 0]);
+      drawSummaryRow(`TOTAL ${mName.toUpperCase()}`, formatCurrency(mTotalVal), [0, 50, 100]);
+      
+      currentY += 4;
+    });
+
+    let calculatedPrecoSubtotal = 0;
+    let calculatedNoStock = 0;
+    let calculatedDiscount = 0;
+
+    selectedItems.forEach((item: any) => {
+      const salePrice = item.product?.salePrice || item.price || 0;
+      const finalPrice = item.product?.finalPrice || item.price || 0;
+      
+      const rowSubtotal = Math.round(finalPrice * item.quantity * 100) / 100;
+      const rowPrecoSubtotal = Math.round(salePrice * item.quantity * 100) / 100;
+      const rowDiscount = Math.round((salePrice - finalPrice) * item.quantity * 100) / 100;
+
+      calculatedPrecoSubtotal += rowPrecoSubtotal;
+      calculatedDiscount += rowDiscount;
+      
+      const hasStock = item.product ? item.product.stock > 0 : false;
+      if (!hasStock) {
+        calculatedNoStock += rowSubtotal;
       }
     });
 
-    const summaryY = (doc as any).lastAutoTable.finalY + 5;
     const subtotal = Math.round(calculatedPrecoSubtotal * 100) / 100;
     const noStock = Math.round(calculatedNoStock * 100) / 100;
     const discount = Math.round(calculatedDiscount * 100) / 100;
     const total = Math.round((subtotal - noStock - discount) * 100) / 100;
 
+    if (currentY > 240) {
+      doc.addPage();
+      currentY = 20;
+    }
+
     doc.setFontSize(9);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(100, 100, 100);
-    doc.text('SUBTOTAL', 160, summaryY, { align: 'right' });
-    doc.text(formatCurrency(subtotal), 196, summaryY, { align: 'right' });
+    doc.text('SUBTOTAL GERAL', 160, currentY, { align: 'right' });
+    doc.text(formatCurrency(subtotal), 196, currentY, { align: 'right' });
     doc.setTextColor(200, 0, 0);
-    doc.text('SEM ESTOQUE', 160, summaryY + 6, { align: 'right' });
-    doc.text(formatCurrency(noStock), 196, summaryY + 6, { align: 'right' });
+    doc.text('SEM ESTOQUE GERAL', 160, currentY + 6, { align: 'right' });
+    doc.text(formatCurrency(noStock), 196, currentY + 6, { align: 'right' });
     doc.setTextColor(0, 150, 0);
-    doc.text('DESCONTO', 160, summaryY + 12, { align: 'right' });
-    doc.text(`-${formatCurrency(discount)}`, 196, summaryY + 12, { align: 'right' });
+    doc.text('DESCONTO GERAL', 160, currentY + 12, { align: 'right' });
+    doc.text(`-${formatCurrency(discount)}`, 196, currentY + 12, { align: 'right' });
     doc.setFillColor(240, 240, 240);
-    doc.rect(140, summaryY + 15, 60, 8, 'F');
+    doc.rect(140, currentY + 15, 60, 8, 'F');
     doc.setFontSize(11);
     doc.setTextColor(0, 50, 100);
-    doc.text('TOTAL', 160, summaryY + 21, { align: 'right' });
-    doc.text(formatCurrency(total), 196, summaryY + 21, { align: 'right' });
+    doc.text('TOTAL GERAL', 160, currentY + 21, { align: 'right' });
+    doc.text(formatCurrency(total), 196, currentY + 21, { align: 'right' });
 
     doc.setFontSize(8);
     doc.setTextColor(150, 150, 150);
@@ -1245,7 +1672,7 @@ export default function ImportPanel() {
         [{ v: 'Vendedor', t: 's', s: labelStyle }, { v: (profile?.name || 'Leonel Amorim').toUpperCase(), t: 's', s: valueStyle }],
         [{ v: 'Cidade/Estado', t: 's', s: labelStyle }, { v: (res.client?.city ? `${res.client.city} / ${res.client.state || 'MA'}` : 'N/A').toUpperCase(), t: 's', s: valueStyle }],
         [],
-        [{ v: `FABRICANTE: ${manufacturer.toUpperCase()}`, t: 's', s: sectionBarStyle }, null, null, null, null, null, null, null, null],
+        [{ v: `INDÚSTRIA: ${manufacturer.toUpperCase()}`, t: 's', s: sectionBarStyle }, null, null, null, null, null, null, null, null],
         [
           { v: 'COD.', t: 's', s: tableHeadStyle },
           { v: 'EAN', t: 's', s: tableHeadStyle },
@@ -1423,7 +1850,7 @@ export default function ImportPanel() {
       doc.setFontSize(9);
       doc.setTextColor(255, 255, 255);
       doc.setFont('helvetica', 'bold');
-      doc.text(`FABRICANTE: ${manufacturer.toUpperCase()}`, 105, nextY + 4.5, { align: 'center' });
+      doc.text(`INDÚSTRIA: ${manufacturer.toUpperCase()}`, 105, nextY + 4.5, { align: 'center' });
       nextY += 6;
 
       const resIdx = results.indexOf(res);
@@ -1670,7 +2097,7 @@ export default function ImportPanel() {
         ws_data.push([{ v: 'Vendedor', t: 's', s: labelStyle }, { v: (profile?.name || 'Leonel Amorim').toUpperCase(), t: 's', s: valueStyle }]);
         ws_data.push([{ v: 'Cidade/Estado', t: 's', s: labelStyle }, { v: (res.client?.city ? `${res.client.city} / ${res.client.state || 'MA'}` : 'N/A').toUpperCase(), t: 's', s: valueStyle }]);
         
-        ws_data.push([{ v: `FABRICANTE: ${manufacturer.toUpperCase()}`, t: 's', s: sectionBarStyle }, null, null, null, null, null, null, null, null]);
+        ws_data.push([{ v: `INDÚSTRIA: ${manufacturer.toUpperCase()}`, t: 's', s: sectionBarStyle }, null, null, null, null, null, null, null, null]);
         merges.push({ s: { r: ws_data.length - 1, c: 0 }, e: { r: ws_data.length - 1, c: 8 } });
 
         ws_data.push([
@@ -2007,7 +2434,7 @@ export default function ImportPanel() {
               type="file" 
               id="fileInput" 
               className="hidden" 
-              accept=".pdf,.xlsx,.xls,.csv"
+              accept=".pdf,.xlsx,.xls,.csv,image/*"
               onChange={handleFileSelect}
             />
             <div className="w-20 h-20 bg-orange-100 dark:bg-orange-900/20 rounded-full flex items-center justify-center text-orange-600">
@@ -2016,7 +2443,7 @@ export default function ImportPanel() {
             <div>
               <h3 className="font-display font-bold text-xl text-gray-900 dark:text-white">Importar Pedido</h3>
               <p className="text-sm text-gray-500 mt-2">
-                PDF (A7 Pharma) ou Excel/CSV<br />com EAN + Quantidade
+                PDF (A7 Pharma, HBN1), Excel/CSV<br />ou Imagem de Pedido
               </p>
             </div>
             <div className="flex flex-col sm:flex-row gap-3 mt-4 w-full justify-center">
@@ -2264,7 +2691,7 @@ export default function ImportPanel() {
                           
                           {res.headerInfo && (
                             <div className="flex flex-wrap gap-x-4 gap-y-1 mb-4 text-[9px] font-black uppercase opacity-90 tracking-tighter leading-tight">
-                              {res.headerInfo.fornecedor && <span>FORNECEDOR: {res.headerInfo.fornecedor}</span>}
+                              {res.headerInfo.fornecedor && <span>INDÚSTRIA: {res.headerInfo.fornecedor}</span>}
                               {res.headerInfo.condPgto && <span>COND. PGTO: {res.headerInfo.condPgto}</span>}
                               {res.headerInfo.status && <span>STATUS: {res.headerInfo.status}</span>}
                               {res.headerInfo.dataEntrega && <span>DATA ENTREGA: {res.headerInfo.dataEntrega}</span>}
