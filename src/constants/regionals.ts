@@ -1,5 +1,5 @@
 export const REGIONALS = {
-  'TIMON-MA': { id: '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs', label: 'TIMON - MA' },
+  'TIMON-MA': { id: '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs', label: 'TERESINA - PI' },
   'THE': { id: '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs', label: 'TERESINA - PI' },
   'IMP': { id: '1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs', label: 'IMPERATRIZ - MA' }
 } as const;

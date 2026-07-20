@@ -497,13 +497,115 @@ export default function ImportPanel() {
               const pageText = pageObj.text;
               const pageLines = pageText.split('\n');
               let lastFilialNum = '';
+              const isPedidoCompraComercializacao = pageText.toLowerCase().includes("compra mercadoria para comercializacao") || 
+                                                   (pageText.toLowerCase().includes("pedido de compra") && pageText.toLowerCase().includes("insc. federal (cnpj)"));
               
               for (let lineIdx = 0; lineIdx < pageLines.length; lineIdx++) {
                 const line = pageLines[lineIdx];
                 const trimmedLine = line.trim();
                 if (!trimmedLine) continue;
 
-                // 1. Identify client block headers
+                // Pre-identify client header for Pedido de Compra / Comercialização format
+                if (isPedidoCompraComercializacao && !currentClientObj) {
+                  let clientName = 'Cliente Não Identificado';
+                  let clientCnpj = '';
+                  
+                  // Find the index of the "Fornecedor" line to limit buyer search to the top buyer header
+                  const fornecedorIdx = pageLines.findIndex(l => {
+                    const low = l.toLowerCase().trim();
+                    return low === 'fornecedor' || low.includes('fornecedor');
+                  });
+                  const buyerLines = fornecedorIdx !== -1 ? pageLines.slice(0, fornecedorIdx) : pageLines;
+                  const buyerText = buyerLines.join('\n');
+                  
+                  // Extract CNPJ specifically targeting the "Insc. Federal (CNPJ)" or "Insc. Federal" in buyer section
+                  for (let i = 0; i < buyerLines.length; i++) {
+                    const l = buyerLines[i].toLowerCase();
+                    if (l.includes("insc. federal") || l.includes("insc.federal") || l.includes("cnpj") || l.includes("federal")) {
+                      for (let j = 0; j <= 3; j++) {
+                        if (i + j < buyerLines.length) {
+                          const candidate = buyerLines[i + j];
+                          const match = candidate.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
+                          if (match) {
+                            clientCnpj = match[1].replace(/[^\d]/g, '');
+                            break;
+                          }
+                        }
+                      }
+                      if (clientCnpj) break;
+                    }
+                  }
+                  
+                  // Fallback: extract the first CNPJ pattern in buyer section
+                  if (!clientCnpj) {
+                    const buyerCnpjs = buyerText.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/g) || [];
+                    if (buyerCnpjs.length > 0) {
+                      clientCnpj = buyerCnpjs[0].replace(/[^\d]/g, '');
+                    }
+                  }
+                  
+                  // Extract Client Name from buyer lines
+                  for (let i = 0; i < buyerLines.length; i++) {
+                    const l = buyerLines[i].trim();
+                    if ((l.toLowerCase().includes("nome da empresa (razão social)") || l.toLowerCase() === "razão social") && clientName === 'Cliente Não Identificado') {
+                      for (let j = 1; j <= 3; j++) {
+                        if (i + j < buyerLines.length) {
+                          const nextLine = buyerLines[i + j].trim();
+                          if (nextLine && 
+                              !nextLine.toLowerCase().includes("nome fantasia") && 
+                              !nextLine.toLowerCase().includes("comprador") &&
+                              !nextLine.toLowerCase().includes("sugestão") &&
+                              !nextLine.toLowerCase().includes("empresa") &&
+                              !nextLine.toLowerCase().includes("fornecedor") &&
+                              !nextLine.match(/^\d+$/)) {
+                            clientName = nextLine;
+                            break;
+                          }
+                        }
+                      }
+                    }
+                    if (l.toLowerCase().includes("nome fantasia") && clientName === 'Cliente Não Identificado') {
+                      if (i + 1 < buyerLines.length) {
+                        const candidate = buyerLines[i + 1].trim();
+                        if (candidate && !candidate.toLowerCase().includes("federal")) {
+                          clientName = candidate;
+                        }
+                      }
+                    }
+                  }
+                  
+                  currentClientObj = {
+                    clientName: clientName,
+                    cnpj: clientCnpj,
+                    items: [],
+                    headerInfo: {
+                      fornecedor: 'NAZARIA DISTRIBUIDORA',
+                      condPgto: '',
+                      status: 'Pendente',
+                      dataEntrega: '',
+                      cotacao: 'PEDIDO DE COMPRA'
+                    }
+                  };
+                  importResults.push(currentClientObj);
+                  unmatchedBuffer = [];
+                  
+                  const matchedClient = allClients.find(c => {
+                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                    if (clientCnpj && dbCnpj === clientCnpj) return true;
+                    return c.name.toLowerCase().includes(clientName.toLowerCase()) || clientName.toLowerCase().includes(c.name.toLowerCase());
+                  });
+                  if (matchedClient) {
+                    currentClientObj.client = matchedClient;
+                    currentClientObj.clientName = matchedClient.name;
+                    // Keep parsed clientCnpj as primary, only use matchedClient.cnpj if clientCnpj is empty
+                    if (!currentClientObj.cnpj && matchedClient.cnpj) {
+                      currentClientObj.cnpj = matchedClient.cnpj.replace(/[^\d]/g, '');
+                    }
+                  }
+                }
+
+                if (!isPedidoCompraComercializacao) {
+                  // 1. Identify client block headers
                 // A. Nazaria Filial header & CNPJ / Client Name extraction (handles same-line or separate-line layouts)
                 const filialOnlyMatch = trimmedLine.match(/Filial:\s*(\d+)/i);
                 const nazariaCnpjMatch = trimmedLine.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})\s+([^\n]+)/);
@@ -728,6 +830,7 @@ export default function ImportPanel() {
                   currentClientObj.headerInfo.cotacao = hbn1PedidoMatch[1].trim();
                   continue;
                 }
+                }
 
                 // If we match minor header fields
                 if (currentClientObj) {
@@ -763,6 +866,82 @@ export default function ImportPanel() {
                 }
 
                 // 2. Check for product patterns
+                // A.0 Pedido de Compra / Comercialização product pattern
+                if (isPedidoCompraComercializacao) {
+                  const regexPedidoCompraEAN = /^(\d+)\s+(\d{8,14})\s+(.*?)\s+(\d+[\d\.,]*,\d{2})\s+([A-Z]{2})\s+(\d+)\s+(\d+[\d\.,]*,\d{2})\b/;
+                  const matchEan = trimmedLine.match(regexPedidoCompraEAN);
+                  
+                  if (matchEan) {
+                    const ean = normalizeEAN(matchEan[2]);
+                    const desc = matchEan[3].trim();
+                    const quantity = parseFloat(matchEan[4].replace(/\./g, '').replace(',', '.'));
+                    const priceVal = parseFloat(matchEan[7].replace(/\./g, '').replace(',', '.'));
+                    
+                    if (!currentClientObj) {
+                      currentClientObj = {
+                        clientName: 'Cliente Não Identificado',
+                        cnpj: '',
+                        items: [],
+                        headerInfo: { fornecedor: 'NAZARIA DISTRIBUIDORA', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: 'PEDIDO DE COMPRA' }
+                      };
+                      importResults.push(currentClientObj);
+                    }
+                    
+                    const product = allProducts.find(prod => normalizeEAN(prod.ean) === ean);
+                    if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
+                      currentClientObj.items.push({
+                        ean,
+                        quantity: isNaN(quantity) ? 1 : quantity,
+                        description: product?.description || desc,
+                        found: !!product,
+                        product: product,
+                        price: priceVal || product?.finalPrice || 0
+                      });
+                    }
+                    unmatchedBuffer = [];
+                    continue;
+                  }
+                  
+                  const regexPedidoCompraNoEAN = /^(\d+)\s+([A-Za-z0-9\s%\-\/\+ªº\(\)\.,#@&]+?)\s+(\d+[\d\.,]*,\d{2})\s+([A-Z]{2})\s+(\d+)\s+(\d+[\d\.,]*,\d{2})\b/;
+                  const matchNoEan = trimmedLine.match(regexPedidoCompraNoEAN);
+                  
+                  if (matchNoEan) {
+                    const descRaw = matchNoEan[2].trim();
+                    // If description starts with a 13-digit EAN, skip to avoid misclassifying EAN lines
+                    if (!descRaw.match(/^\d{13}\b/)) {
+                      const desc = descRaw;
+                      const quantity = parseFloat(matchNoEan[3].replace(/\./g, '').replace(',', '.'));
+                      const priceVal = parseFloat(matchNoEan[6].replace(/\./g, '').replace(',', '.'));
+                      
+                      if (!currentClientObj) {
+                        currentClientObj = {
+                          clientName: 'Cliente Não Identificado',
+                          cnpj: '',
+                          items: [],
+                          headerInfo: { fornecedor: 'NAZARIA DISTRIBUIDORA', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: 'PEDIDO DE COMPRA' }
+                        };
+                        importResults.push(currentClientObj);
+                      }
+                      
+                      const product = allProducts.find(prod => prod.id === matchNoEan[1] || prod.ean === matchNoEan[1] || prod.description?.toLowerCase().includes(desc.toLowerCase()));
+                      const finalEan = product?.ean || '';
+                      
+                      if (!currentClientObj.items.find((item: any) => item.description === desc || (finalEan && normalizeEAN(item.ean) === normalizeEAN(finalEan)))) {
+                        currentClientObj.items.push({
+                          ean: finalEan,
+                          quantity: isNaN(quantity) ? 1 : quantity,
+                          description: product?.description || desc,
+                          found: !!product,
+                          product: product,
+                          price: priceVal || product?.finalPrice || 0
+                        });
+                      }
+                      unmatchedBuffer = [];
+                      continue;
+                    }
+                  }
+                }
+
                 // A. INOVAFARMA product pattern
                 const inovafarmaProdRegex = /^(\d+)\s+(\d{13})\s+(?:(\d{4,8})\s+)?(.*?)\s+([\s\-]?\d+)\s+(\d+)\s+([\d\.]+,\d{2})\s+([\d\.]+,\d{2})$/;
                 const inovafarmaMatchRow = trimmedLine.match(inovafarmaProdRegex);
@@ -1383,14 +1562,6 @@ export default function ImportPanel() {
         currentY = 20;
       }
 
-      doc.setFillColor(255, 107, 0);
-      doc.rect(14, currentY, 182, 6, 'F');
-      doc.setFontSize(9);
-      doc.setTextColor(255, 255, 255);
-      doc.setFont('helvetica', 'bold');
-      doc.text(`INDÚSTRIA: ${mName.toUpperCase()}`, 105, currentY + 4.5, { align: 'center' });
-      currentY += 6;
-
       let mPrecoSubtotal = 0;
       let mNoStock = 0;
       let mDiscount = 0;
@@ -1427,7 +1598,10 @@ export default function ImportPanel() {
 
       autoTable(doc, {
         startY: currentY,
-        head: [['COD. ▼', 'EAN ▼', 'DESCRICAO ▼', 'PRECO ▼', 'DESC% ▼', 'PR.FINAL ▼', 'QT ▼', 'SUBTOTAL ▼', 'STATUS ▼']],
+        head: [
+          [{ content: `INDÚSTRIA: ${mName.toUpperCase()}`, colSpan: 9, styles: { halign: 'center', fillColor: [255, 107, 0], textColor: 255, fontSize: 9, fontStyle: 'bold' } }],
+          ['COD.', 'EAN', 'DESCRICAO', 'PRECO', 'DESC%', 'PR.FINAL', 'QT', 'SUBTOTAL', 'STATUS']
+        ],
         body: tableData,
         theme: 'grid',
         headStyles: { fillColor: [255, 107, 0], textColor: 255, fontSize: 7, fontStyle: 'bold', halign: 'center' },
@@ -1845,13 +2019,6 @@ export default function ImportPanel() {
       drawHeader(doc, currentOrderNum, totalOrders, clientCode);
       let nextY = drawClientData(doc, 55, res);
       const manufacturer = res.headerInfo?.fornecedor || 'UNILEVER';
-      doc.setFillColor(255, 107, 0);
-      doc.rect(14, nextY, 182, 6, 'F');
-      doc.setFontSize(9);
-      doc.setTextColor(255, 255, 255);
-      doc.setFont('helvetica', 'bold');
-      doc.text(`INDÚSTRIA: ${manufacturer.toUpperCase()}`, 105, nextY + 4.5, { align: 'center' });
-      nextY += 6;
 
       const resIdx = results.indexOf(res);
       const selectedItems = res.items.filter((_: any, iIdx: number) => checkedItems.has(`${resIdx}-${iIdx}`));
@@ -1891,7 +2058,10 @@ export default function ImportPanel() {
 
       autoTable(doc, {
         startY: nextY,
-        head: [['COD. \u25BC', 'EAN \u25BC', 'DESCRICAO \u25BC', 'PRECO \u25BC', 'DESC% \u25BC', 'PR.FINAL \u25BC', 'QT \u25BC', 'SUBTOTAL \u25BC', 'STATUS \u25BC']],
+        head: [
+          [{ content: `INDÚSTRIA: ${manufacturer.toUpperCase()}`, colSpan: 9, styles: { halign: 'center', fillColor: [255, 107, 0], textColor: 255, fontSize: 9, fontStyle: 'bold' } }],
+          ['COD.', 'EAN', 'DESCRICAO', 'PRECO', 'DESC%', 'PR.FINAL', 'QT', 'SUBTOTAL', 'STATUS']
+        ],
         body: tableData,
         theme: 'grid',
         headStyles: { fillColor: [255, 107, 0], textColor: 255, fontSize: 7, fontStyle: 'bold', halign: 'center' },
@@ -2572,16 +2742,8 @@ export default function ImportPanel() {
                     <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1.5 ml-1">
                       Regional Correspondente
                     </label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {Object.keys(REGIONALS).filter(reg => {
-                        if (profile?.role !== 'vendedor') return true;
-                        if (!profile.regional) return false;
-                        const userReg = profile.regional.toUpperCase();
-                        if (reg === 'TIMON-MA') return userReg.includes('TIMON') || userReg.includes('TIMAO');
-                        if (reg === 'THE') return userReg.includes('THE') || userReg.includes('TERESINA');
-                        if (reg === 'IMP') return userReg.includes('IMP') || userReg.includes('IMPERATRIZ');
-                        return false;
-                      }).map((reg) => (
+                    <div className="grid grid-cols-1 gap-2">
+                      {Object.keys(REGIONALS).filter(reg => reg === 'TIMON-MA').map((reg) => (
                         <button
                           key={reg}
                           onClick={() => setSelectedRegional(reg)}

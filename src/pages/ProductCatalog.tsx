@@ -1156,15 +1156,22 @@ export default function ProductCatalog() {
     }, {});
 
     Object.entries(groupedItems).forEach(([manufacturer, mItems]: [string, any]) => {
-      if (currentY > 230) {
+      if (currentY > 220) {
         doc.addPage();
         currentY = 20;
       }
 
       const isPromoter = profile?.role === 'promotor';
-      const tableHeaders = isPromoter
-        ? [['COD. \u25BC', 'EAN \u25BC', 'DESCRICAO \u25BC', 'PRECO \u25BC', 'QT \u25BC', 'SUBTOTAL \u25BC', 'STATUS \u25BC']]
-        : [['COD. \u25BC', 'EAN \u25BC', 'DESCRICAO \u25BC', 'PRECO \u25BC', 'DESC \u25BC', 'PR.FINAL \u25BC', 'QT \u25BC', 'SUBTOTAL \u25BC', 'STATUS \u25BC']];
+      const colSpanNum = isPromoter ? 7 : 9;
+      const tableHeaders: any = isPromoter
+        ? [
+            [{ content: `INDÚSTRIA: ${manufacturer.toUpperCase()}`, colSpan: colSpanNum, styles: { halign: 'center', fillColor: orange, textColor: white, fontSize: 10, fontStyle: 'bold' } }],
+            ['COD.', 'EAN', 'DESCRICAO', 'PRECO', 'QT', 'SUBTOTAL', 'STATUS']
+          ]
+        : [
+            [{ content: `INDÚSTRIA: ${manufacturer.toUpperCase()}`, colSpan: colSpanNum, styles: { halign: 'center', fillColor: orange, textColor: white, fontSize: 10, fontStyle: 'bold' } }],
+            ['COD.', 'EAN', 'DESCRICAO', 'PRECO', 'DESC%', 'PR.FINAL', 'QT', 'SUBTOTAL', 'STATUS']
+          ];
 
       const tableData = mItems.map((item: any) => isPromoter 
         ? [
@@ -1677,15 +1684,15 @@ export default function ProductCatalog() {
     const isPromoter = profile?.role === 'promotor';
 
     Object.entries(groupedItems).forEach(([manufacturer, mItems]: [string, any]) => {
-      const mHeaderRow = worksheet.addRow([`FABRICANTE: ${manufacturer.toUpperCase()}`]);
+      const mHeaderRow = worksheet.addRow([`INDÚSTRIA: ${manufacturer.toUpperCase()}`]);
       worksheet.mergeCells(`A${mHeaderRow.number}:I${mHeaderRow.number}`);
       mHeaderRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: orangeColor } };
       mHeaderRow.getCell(1).font = { bold: true, color: { argb: whiteColor } };
       mHeaderRow.getCell(1).alignment = { horizontal: 'center' };
 
       const tableHeader = isPromoter
-        ? worksheet.addRow(['COD. ▼', 'EAN ▼', 'DESCRICAO ▼', 'PRECO ▼', 'QT ▼', 'SUBTOTAL ▼', 'STATUS ▼'])
-        : worksheet.addRow(['COD. ▼', 'EAN ▼', 'DESCRICAO ▼', 'PRECO ▼', 'DESC ▼', 'PR.FINAL ▼', 'QT ▼', 'SUBTOTAL ▼', 'STATUS ▼']);
+        ? worksheet.addRow(['COD.', 'EAN', 'DESCRICAO', 'PRECO', 'QT', 'SUBTOTAL', 'STATUS'])
+        : worksheet.addRow(['COD.', 'EAN', 'DESCRICAO', 'PRECO', 'DESC', 'PR.FINAL', 'QT', 'SUBTOTAL', 'STATUS']);
 
       tableHeader.eachCell(cell => {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: orangeColor } };
