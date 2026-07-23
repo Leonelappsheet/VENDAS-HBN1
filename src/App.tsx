@@ -27,6 +27,14 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
   return profile ? <>{children}</> : <Navigate to="/login" />;
 }
 
+function ClientSelectionWrapper() {
+  const { profile } = useAuth();
+  if (profile?.role === 'cliente') {
+    return <Navigate to="/catalog" replace />;
+  }
+  return <ClientSelection />;
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
@@ -41,7 +49,7 @@ export default function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/" element={
                 <PrivateRoute>
-                  <ClientSelection />
+                  <ClientSelectionWrapper />
                 </PrivateRoute>
               } />
               <Route path="/catalog" element={

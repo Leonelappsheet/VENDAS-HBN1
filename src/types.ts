@@ -51,7 +51,7 @@ export interface Order {
 export interface UserProfile {
   uid: string;
   name: string;
-  role: 'admin' | 'vendedor' | 'promotor';
+  role: 'admin' | 'vendedor' | 'promotor' | 'cliente';
   phone: string;
   email: string;
   regional: string;

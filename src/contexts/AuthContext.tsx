@@ -147,6 +147,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const parsed = JSON.parse(savedProfile);
             setProfile(parsed);
             
+            if (parsed.role === 'cliente') {
+              const savedClient = localStorage.getItem('selectedClient');
+              if (savedClient) {
+                try {
+                  setSelectedClientState(JSON.parse(savedClient));
+                } catch (e) {}
+              }
+            }
+
             // Sign in to Firebase Auth anonymously to satisfy firestore rules
             if (!auth.currentUser) {
               try {
@@ -161,22 +170,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               }
             }
             
-            // Auto-refresh profile in background
-            dataService.getUsersFromSheets().then(users => {
-              const foundUser = users.find(u => u.username.toLowerCase() === parsed.uid.toLowerCase());
-              if (foundUser) {
-                const updatedProfile = { 
-                  ...parsed, 
-                  phone: foundUser.phone || parsed.phone, 
-                  regional: foundUser.regional || parsed.regional,
-                  role: (foundUser.role === 'admin' ? 'admin' : foundUser.role === 'promotor' ? 'promotor' : 'vendedor')
-                };
-                setProfile(updatedProfile);
-                try {
-                  localStorage.setItem('VENDAS_profile', JSON.stringify(updatedProfile));
-                } catch (e) {}
-              }
-            }).catch(() => {});
+            // Auto-refresh profile in background (only for non-clients)
+            if (parsed.role !== 'cliente') {
+              dataService.getUsersFromSheets().then(users => {
+                const foundUser = users.find(u => u.username.toLowerCase() === parsed.uid.toLowerCase());
+                if (foundUser) {
+                  const updatedProfile = { 
+                    ...parsed, 
+                    phone: foundUser.phone || parsed.phone, 
+                    regional: foundUser.regional || parsed.regional,
+                    role: (foundUser.role === 'admin' ? 'admin' : foundUser.role === 'promotor' ? 'promotor' : 'vendedor')
+                  };
+                  setProfile(updatedProfile);
+                  try {
+                    localStorage.setItem('VENDAS_profile', JSON.stringify(updatedProfile));
+                  } catch (e) {}
+                }
+              }).catch(() => {});
+            }
           } catch (e) {
             console.error('Profile parse error:', e);
             try {
@@ -225,6 +236,67 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         localStorage.setItem('VENDAS_profile', JSON.stringify(newProfile));
         return true;
       }
+
+      // Check Client login by CNPJ (e.g. 00.000.000/0001-00 or 00000000000100)
+      const cleanInputDigits = username.replace(/\D/g, '');
+      const rawUsername = username.trim().toLowerCase();
+      const inputPassword = (password || '').trim();
+
+      const clients = await dataService.getClients(undefined, true);
+      const foundClient = clients.find(c => {
+        if (!c) return false;
+        const cCnpjClean = (c.cnpj || '').replace(/\D/g, '');
+        if (cleanInputDigits.length >= 6 && cCnpjClean === cleanInputDigits) {
+          return true;
+        }
+        if (c.cnpj && c.cnpj.trim().toLowerCase() === rawUsername) {
+          return true;
+        }
+        if (c.id && String(c.id).trim().toLowerCase() === rawUsername) {
+          return true;
+        }
+        return false;
+      });
+
+      if (foundClient) {
+        const cleanClientCnpj = (foundClient.cnpj || '').replace(/\D/g, '');
+        // Default password: first 6 digits of clean CNPJ (or clean client ID if CNPJ unavailable)
+        const expectedPassword = cleanClientCnpj.substring(0, 6) || String(foundClient.id).substring(0, 6);
+
+        if (inputPassword === expectedPassword) {
+          if (!auth.currentUser) {
+            try {
+              await signInAnonymously(auth);
+            } catch (authError) {
+              console.warn('Anonymous auth failed during client login:', authError);
+            }
+          }
+
+          const clientProfile: UserProfile = {
+            uid: `client_${foundClient.id}`,
+            name: foundClient.tradeName || foundClient.name,
+            role: 'cliente',
+            phone: foundClient.phone || '',
+            email: foundClient.email || '',
+            regional: foundClient.regional || 'TIMON-MA'
+          };
+
+          setProfile(clientProfile);
+          setSelectedClientState(foundClient);
+
+          localStorage.setItem('VENDAS_profile', JSON.stringify(clientProfile));
+          localStorage.setItem('selectedClient', JSON.stringify(foundClient));
+
+          try {
+            await dataService.saveUserState(clientProfile.uid, foundClient);
+          } catch (e) {
+            console.warn('Failed to save client user state:', e);
+          }
+
+          return true;
+        }
+      }
+
       return false;
     } catch (error) {
       console.error('Login error:', error);

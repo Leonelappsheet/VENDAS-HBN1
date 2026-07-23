@@ -1545,6 +1545,22 @@ apiRouter.post("/catalog/update", async (req, res) => {
         }
       }
 
+      // Smart Fallback Scan if newEan or newId or newDesc is missing
+      if (!newEan || !newId || !newDesc) {
+        if (Array.isArray(item)) {
+          for (let col = 0; col < item.length; col++) {
+            const cellVal = String(item[col] || "").trim();
+            if (!newEan && /^\d{8,14}$/.test(cellVal.replace(/['\s]/g, ''))) {
+              newEan = normalizeEAN(cellVal);
+            } else if (!newId && /^\d{5,7}$/.test(cellVal.replace(/['\s]/g, ''))) {
+              newId = cellVal;
+            } else if (!newDesc && cellVal.length > 5 && !/^\d+$/.test(cellVal) && !cellVal.includes("R$")) {
+              newDesc = cellVal;
+            }
+          }
+        }
+      }
+
       const isJunk = !newId && !newEan;
       const isHeaderRepeat = newDesc.toLowerCase().includes("descri") || newId.toLowerCase().includes("id") || newEan.toLowerCase().includes("ean");
       
@@ -1685,26 +1701,82 @@ apiRouter.post("/catalog/update", async (req, res) => {
         }
       } else {
         const industryName = industria.split(' ')[0].toUpperCase();
-        // Add as new product to "Produtos" sheet
         const headers = sheetData["Produtos"]?.headers || [];
-        const rowLength = Math.max(headers.length, 8);
+        const rowLength = Math.max(headers.length, 10);
         const newRow = new Array(rowLength).fill("");
         
-        newRow[idIdx] = newId;
-        newRow[eanIdx] = newEan;
-        newRow[descIdx] = newDesc;
-        newRow[stockIdx] = newStock;
-        newRow[priceIdx] = formatBrazilian(newPrice);
-        newRow[discIdx] = formatBrazilian(newDiscount, true);
-        newRow[finalIdx] = formatBrazilian(newFinal);
-        newRow[validIdx] = newValid;
+        const finalNewStock = (!newStock || newStock === "" || newStock === "0") ? "100" : newStock;
 
-        const fabColIdx = headers.findIndex((h: any) => String(h || "").toLowerCase().includes("fabricante"));
-        if (fabColIdx !== -1) newRow[fabColIdx] = industryName;
-        
+        // Dynamically locate column indices if headers exist
+        let pIdIdx = 0, pEanIdx = 1, pDescIdx = 2, pStockIdx = 3, pPriceIdx = 4, pDiscIdx = 5, pFinalIdx = 6, pValidIdx = 7, pCatIdx = 8, pFabIdx = 9;
+
+        if (headers && headers.length > 0) {
+          const normProdHeaders = headers.map(h => String(h || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+          const findIdx = (terms: string[]) => normProdHeaders.findIndex(h => terms.some(t => h.includes(t)));
+          
+          const idxId = findIdx(["id", "codigo", "cod"]); if (idxId !== -1) pIdIdx = idxId;
+          const idxEan = findIdx(["ean", "gtin", "barras"]); if (idxEan !== -1) pEanIdx = idxEan;
+          const idxDesc = findIdx(["descri", "nome", "produto"]); if (idxDesc !== -1) pDescIdx = idxDesc;
+          const idxStock = findIdx(["estoque", "saldo", "qtd", "stock"]); if (idxStock !== -1) pStockIdx = idxStock;
+          const idxPrice = findIdx(["preco venda", "pv", "preco", "tabela", "unitario"]); if (idxPrice !== -1) pPriceIdx = idxPrice;
+          const idxDisc = findIdx(["desconto", "desc"]); if (idxDisc !== -1) pDiscIdx = idxDisc;
+          const idxFinal = findIdx(["preco final", "pf", "liquido"]); if (idxFinal !== -1) pFinalIdx = idxFinal;
+          const idxValid = findIdx(["validade", "expira"]); if (idxValid !== -1) pValidIdx = idxValid;
+          const idxCat = findIdx(["categoria", "grupo"]); if (idxCat !== -1) pCatIdx = idxCat;
+          const idxFab = findIdx(["fabricante", "industria", "marca"]); if (idxFab !== -1) pFabIdx = idxFab;
+        }
+
+        newRow[pIdIdx] = newId;
+        newRow[pEanIdx] = newEan;
+        newRow[pDescIdx] = newDesc || `Produto ${newId || newEan}`;
+        newRow[pStockIdx] = finalNewStock;
+        newRow[pPriceIdx] = formatBrazilian(newPrice);
+        newRow[pDiscIdx] = formatBrazilian(newDiscount, true);
+        newRow[pFinalIdx] = formatBrazilian(newFinal);
+        if (pValidIdx !== -1) newRow[pValidIdx] = newValid;
+        if (pCatIdx !== -1) newRow[pCatIdx] = "Geral";
+        if (pFabIdx !== -1) newRow[pFabIdx] = industryName;
+
         newProductsRows.push(newRow);
         newCount++;
-        newProductsLog.push(`${newDesc || "Sem Descrição"} (ID: ${newId || '-'}) → Est: ${newStock || '0'} | Preço: R$ ${formatBrazilian(newPrice)} | Desc: ${formatBrazilian(newDiscount, true)} | Final: R$ ${formatBrazilian(newFinal)}`);
+        newProductsLog.push(`${newDesc || "Sem Descrição"} (ID: ${newId || '-'}) → Est: ${finalNewStock} | Preço: R$ ${formatBrazilian(newPrice)} | Desc: ${formatBrazilian(newDiscount, true)} | Final: R$ ${formatBrazilian(newFinal)}`);
+
+        // Also add to Ofertas sheet if it has a discount
+        if (sheetData["Ofertas"] && (newDiscount > 0 || (newFinal > 0 && newFinal < newPrice))) {
+          const offerHeaders = sheetData["Ofertas"].headers || [];
+          const offerRowLength = Math.max(offerHeaders.length, 10);
+          const newOfferRow = new Array(offerRowLength).fill("");
+
+          let oIdIdx = pIdIdx, oEanIdx = pEanIdx, oDescIdx = pDescIdx, oStockIdx = pStockIdx, oPriceIdx = pPriceIdx, oDiscIdx = pDiscIdx, oFinalIdx = pFinalIdx, oValidIdx = pValidIdx, oCatIdx = pCatIdx, oFabIdx = pFabIdx;
+          if (offerHeaders && offerHeaders.length > 0) {
+            const normOfferHeaders = offerHeaders.map(h => String(h || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+            const findIdx = (terms: string[]) => normOfferHeaders.findIndex(h => terms.some(t => h.includes(t)));
+            
+            const idxId = findIdx(["id", "codigo", "cod"]); if (idxId !== -1) oIdIdx = idxId;
+            const idxEan = findIdx(["ean", "gtin", "barras"]); if (idxEan !== -1) oEanIdx = idxEan;
+            const idxDesc = findIdx(["descri", "nome", "produto"]); if (idxDesc !== -1) oDescIdx = idxDesc;
+            const idxStock = findIdx(["estoque", "saldo", "qtd", "stock"]); if (idxStock !== -1) oStockIdx = idxStock;
+            const idxPrice = findIdx(["preco venda", "pv", "preco", "tabela", "unitario"]); if (idxPrice !== -1) oPriceIdx = idxPrice;
+            const idxDisc = findIdx(["desconto", "desc"]); if (idxDisc !== -1) oDiscIdx = idxDisc;
+            const idxFinal = findIdx(["preco final", "pf", "liquido"]); if (idxFinal !== -1) oFinalIdx = idxFinal;
+            const idxValid = findIdx(["validade", "expira"]); if (idxValid !== -1) oValidIdx = idxValid;
+            const idxCat = findIdx(["categoria", "grupo"]); if (idxCat !== -1) oCatIdx = idxCat;
+            const idxFab = findIdx(["fabricante", "industria", "marca"]); if (idxFab !== -1) oFabIdx = idxFab;
+          }
+
+          newOfferRow[oIdIdx] = newId;
+          newOfferRow[oEanIdx] = newEan;
+          newOfferRow[oDescIdx] = newDesc || `Produto ${newId || newEan}`;
+          newOfferRow[oStockIdx] = finalNewStock;
+          newOfferRow[oPriceIdx] = formatBrazilian(newPrice);
+          newOfferRow[oDiscIdx] = formatBrazilian(newDiscount, true);
+          newOfferRow[oFinalIdx] = formatBrazilian(newFinal);
+          if (oValidIdx !== -1) newOfferRow[oValidIdx] = newValid;
+          if (oCatIdx !== -1) newOfferRow[oCatIdx] = "Geral";
+          if (oFabIdx !== -1) newOfferRow[oFabIdx] = industryName;
+
+          sheetData["Ofertas"].rows.push(newOfferRow);
+        }
         
         const entry = { row: newRow, sheetName: "Produtos" };
         if (newId) {

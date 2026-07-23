@@ -386,6 +386,21 @@ export const dataService = {
   },
 
   // Offline Caching Helpers
+  clearCache() {
+    try {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('VENDAS_cache_')) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(k => localStorage.removeItem(k));
+    } catch (e) {
+      console.error('Error clearing cache:', e);
+    }
+  },
+
   getCache<T>(key: string): T | null {
     try {
       const cached = localStorage.getItem(`VENDAS_cache_${key}`);
@@ -810,6 +825,16 @@ export const dataService = {
   },
 
   async updateCatalogInSheets(industria: string, dados: any[], defaultExpiryDate?: string | null) {
+    dataService.clearCache();
+    let result: any = null;
+
+    if (!Array.isArray(dados) || dados.length === 0) {
+      toast.dismiss('update-catalog-progress');
+      toast.dismiss('catalog-update');
+      toast.error('A planilha fornecida está vazia ou não contém linhas válidas.');
+      return null;
+    }
+
     const appsScriptUrl = getAppsScriptUrl();
     if (appsScriptUrl) {
       try {
@@ -823,33 +848,50 @@ export const dataService = {
         });
         toast.dismiss('update-catalog-progress');
         if (resData?.sucesso || resData?.success) {
-          toast.success('Catálogo atualizado com sucesso via Apps Script!');
-          return { sucesso: true };
+          result = {
+            sucesso: true,
+            industry: industria,
+            updatedCount: resData.updatedCount !== undefined ? resData.updatedCount : 0,
+            newCount: resData.newCount !== undefined ? resData.newCount : 0,
+            log: resData.log || [`Catálogo de ${industria} processado com sucesso.`]
+          };
         }
-        throw new Error(resData?.error || 'Erro no script do Google');
       } catch (error: any) {
         toast.dismiss('update-catalog-progress');
-        console.error('Error updating catalog via Apps Script:', error);
-        toast.error(`Erro ao atualizar catálogo: ${error.message}`);
+        console.warn('Apps Script catalog update failed/fallback to API:', error);
+      }
+    }
+
+    if (!result) {
+      try {
+        toast.loading('Processando catálogo no servidor...', { id: 'update-catalog-progress' });
+        const response = await axios.post(`${getApiUrl()}/api/catalog/update`, { industria, dados, defaultExpiryDate }, {
+          headers: dataService.getHeaders()
+        });
+        toast.dismiss('update-catalog-progress');
+        result = response.data;
+      } catch (error: any) {
+        toast.dismiss('update-catalog-progress');
+        toast.dismiss('catalog-update');
+        console.error('Error updating catalog in Sheets:', error);
+        if (error.response?.status === 413) {
+          toast.error('Arquivo muito grande para processar. Tente dividir a planilha em partes menores.');
+        } else {
+          const message = error.response?.data?.error || error.message;
+          toast.error(`Erro ao atualizar catálogo: ${message}`);
+        }
         return null;
       }
     }
 
+    dataService.clearCache();
     try {
-      const response = await axios.post(`${getApiUrl()}/api/catalog/update`, { industria, dados, defaultExpiryDate }, {
-        headers: this.getHeaders()
-      });
-      return response.data;
-    } catch (error: any) {
-      console.error('Error updating catalog in Sheets:', error);
-      if (error.response?.status === 413) {
-        toast.error('Arquivo muito grande para processar. Tente dividir a planilha em partes menores.');
-      } else {
-        const message = error.response?.data?.error || error.message;
-        toast.error(`Erro ao atualizar catálogo: ${message}`);
-      }
-      return null;
+      await dataService.getAllProducts();
+    } catch (e) {
+      console.warn('Failed to pre-fetch products after catalog update:', e);
     }
+
+    return result;
   },
 
   // Orders
@@ -1194,22 +1236,45 @@ export const dataService = {
         return String(row.IDPedido || row.idpedido || row.IDPEDIDO || '').trim() === cartId;
       });
 
+      const cachedProds = (this.getCache(`all_products_${currentRegional}`) || this.getCache(`products_${currentRegional}`) || []) as Product[];
+
       return cartRows.map((row: any) => {
         const quantity = Number(row.Qtd || row.qtd || row.QTD || 0);
-        const finalPrice = Number(row.Preco || row.preco || row.PRECO || 0);
+        const finalPriceFromRow = Number(row.Preco || row.preco || row.PRECO || 0);
+        const prodId = String(row.IDProduto || row.idproduto || row.IDPRODUTO || '');
+        const ean = String(row['Codigo de Barras'] || row['codigo de barras'] || row.EAN || row.ean || '');
+
+        const catalogProd = cachedProds.find(p => p.id === prodId || (ean && p.ean === ean));
+
+        let finalPrice = finalPriceFromRow || catalogProd?.finalPrice || 0;
+        let salePrice = Number(row.PrecoTabela || row.salePrice || catalogProd?.salePrice || finalPrice);
+        let discount = Number(row.Desconto || row.discount || catalogProd?.discount || 0);
+
+        if (catalogProd && catalogProd.discount > 0 && catalogProd.salePrice > catalogProd.finalPrice) {
+          salePrice = catalogProd.salePrice;
+          discount = catalogProd.discount;
+          if (!finalPriceFromRow) finalPrice = catalogProd.finalPrice;
+        }
+
+        if (discount > 0 && salePrice <= finalPrice && discount < 100) {
+          salePrice = Math.round((finalPrice / (1 - discount / 100)) * 100) / 100;
+        } else if (salePrice > finalPrice && discount === 0) {
+          discount = Math.round(((salePrice - finalPrice) / salePrice) * 100 * 100) / 100;
+        }
+
         return {
-          id: String(row.IDProduto || row.idproduto || row.IDPRODUTO || ''),
-          ean: String(row['Codigo de Barras'] || row['codigo de barras'] || row.EAN || row.ean || ''),
-          description: String(row.Descricao || row.descricao || row.DESCRICAO || ''),
-          manufacturer: String(row.Fabricante || row.fabricante || row.FABRICANTE || ''),
+          id: prodId,
+          ean: ean || catalogProd?.ean || '',
+          description: String(row.Descricao || row.descricao || row.DESCRICAO || catalogProd?.description || ''),
+          manufacturer: String(row.Fabricante || row.fabricante || row.FABRICANTE || catalogProd?.manufacturer || ''),
           quantity,
           finalPrice,
-          salePrice: finalPrice,
-          stock: 999,
-          photo: '',
-          type: 'normal',
-          discount: 0,
-          category: ''
+          salePrice,
+          stock: catalogProd?.stock ?? 999,
+          photo: catalogProd?.photo || '',
+          type: catalogProd?.type || 'normal',
+          discount,
+          category: catalogProd?.category || ''
         } as OrderItem;
       });
     } catch (e) {

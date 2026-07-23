@@ -18,6 +18,7 @@ import {
   SlidersHorizontal,
   ArrowUpDown,
   History,
+  ShoppingBag,
   Zap,
   Bell,
   CheckCircle2,
@@ -72,6 +73,44 @@ const applyCustomRounding = (val: number) => {
 
   if (rounded === 0.99) return 1.00;
   return rounded;
+};
+
+export const enrichOrderItem = (item: OrderItem, productsList: Product[] = []): OrderItem => {
+  const catalogProd = productsList.find(p => p.id === item.id || (item.ean && p.ean === item.ean));
+  
+  let finalPrice = Number(item.finalPrice);
+  if (isNaN(finalPrice) || finalPrice <= 0) {
+    finalPrice = Number(catalogProd?.finalPrice) || Number(item.salePrice) || Number(catalogProd?.salePrice) || 0;
+  }
+
+  let salePrice = Number(item.salePrice);
+  if (isNaN(salePrice) || salePrice <= 0 || salePrice < finalPrice) {
+    salePrice = Number(catalogProd?.salePrice) || finalPrice;
+  }
+
+  let discount = Number(item.discount);
+  if (isNaN(discount) || discount <= 0) {
+    if (catalogProd && catalogProd.discount > 0) {
+      discount = catalogProd.discount;
+    } else if (salePrice > finalPrice && salePrice > 0) {
+      discount = ((salePrice - finalPrice) / salePrice) * 100;
+    } else {
+      discount = 0;
+    }
+  }
+
+  if (discount > 0 && salePrice <= finalPrice && discount < 100) {
+    salePrice = applyCustomRounding(finalPrice / (1 - discount / 100));
+  } else if (salePrice > finalPrice && discount === 0) {
+    discount = applyCustomRounding(((salePrice - finalPrice) / salePrice) * 100);
+  }
+
+  return {
+    ...item,
+    salePrice,
+    finalPrice,
+    discount,
+  };
 };
 
 const getManufacturerLogo = (name: string): string | null => {
@@ -617,9 +656,14 @@ export default function ProductCatalog() {
       setBanners(data.filter(b => !b.targetRegional || b.targetRegional === regional));
     });
 
-    const unsubOrders = (selectedClient && profile) ? dataService.subscribeOrders(selectedClient.id, null, false, (data) => {
-      setLastOrders(data);
-    }) : () => {};
+    const unsubOrders = profile ? dataService.subscribeOrders(
+      selectedClient ? selectedClient.id : null,
+      selectedClient ? null : profile.name,
+      profile.role === 'admin',
+      (data) => {
+        setLastOrders(data);
+      }
+    ) : () => {};
 
     if (profile) {
       dataService.getClients(profile.name, profile.role === 'admin').then(setAllClients);
@@ -730,48 +774,107 @@ export default function ProductCatalog() {
     };
   }, [cart, cartKey, selectedClient, profile, cartLoaded]);
 
+  const getProductKey = (p: Product): string => {
+    const id = p.id ? String(p.id).trim() : '';
+    const ean = p.ean ? String(p.ean).trim() : '';
+    const desc = p.description ? String(p.description).trim().toLowerCase() : '';
+
+    if (id && id !== '0' && id !== 'undefined' && id !== 'null') {
+      return `id_${id}`;
+    }
+    if (ean && ean !== '0' && ean !== 'undefined' && ean !== 'null') {
+      return `ean_${ean}`;
+    }
+    return `desc_${desc}`;
+  };
+
+  const tabProductsMap = useMemo(() => {
+    const produtosMap = new Map<string, Product>();
+    const ofertasMap = new Map<string, Product>();
+    const lancamentosMap = new Map<string, Product>();
+
+    products.forEach(p => {
+      const key = getProductKey(p);
+
+      if (p.type === 'normal') {
+        if (!produtosMap.has(key)) {
+          produtosMap.set(key, { ...p });
+        }
+      } else if (p.type === 'offer') {
+        if (!ofertasMap.has(key)) {
+          ofertasMap.set(key, { ...p });
+        }
+      } else if (p.type === 'new') {
+        if (!lancamentosMap.has(key)) {
+          lancamentosMap.set(key, { ...p });
+        }
+      }
+    });
+
+    // Ensure items in ofertasMap and lancamentosMap ALSO appear in produtosMap without duplicates
+    ofertasMap.forEach((offerProd, key) => {
+      if (!produtosMap.has(key)) {
+        produtosMap.set(key, { ...offerProd });
+      } else {
+        const existing = produtosMap.get(key)!;
+        if (offerProd.discount > 0 || (offerProd.finalPrice > 0 && offerProd.finalPrice < existing.finalPrice)) {
+          produtosMap.set(key, {
+            ...existing,
+            discount: offerProd.discount,
+            finalPrice: offerProd.finalPrice,
+            salePrice: offerProd.salePrice || existing.salePrice,
+            discountExpiryDate: offerProd.discountExpiryDate || existing.discountExpiryDate
+          });
+        }
+      }
+    });
+
+    lancamentosMap.forEach((newProd, key) => {
+      if (!produtosMap.has(key)) {
+        produtosMap.set(key, { ...newProd });
+      }
+    });
+
+    return {
+      produtos: Array.from(produtosMap.values()),
+      ofertas: Array.from(ofertasMap.values()),
+      lancamentos: Array.from(lancamentosMap.values()),
+    };
+  }, [products]);
+
   const manufacturers = useMemo(() => {
     const set = new Set<string>();
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    products.forEach(p => {
+    tabProductsMap.produtos.forEach(p => {
       if (p.manufacturer && !dateRegex.test(p.manufacturer)) {
         set.add(p.manufacturer);
       }
     });
     return Array.from(set).sort();
-  }, [products]);
+  }, [tabProductsMap]);
 
   const categories = useMemo(() => {
     const set = new Set<string>();
-    products.forEach(p => {
+    tabProductsMap.produtos.forEach(p => {
       if (p.category) set.add(p.category);
     });
     return Array.from(set).sort();
-  }, [products]);
+  }, [tabProductsMap]);
 
   const counts = useMemo(() => {
-    const tabCounts = { produtos: 0, ofertas: 0, lancamentos: 0 };
-    
-    products.forEach(p => {
-      const isNormal = p.type === 'normal';
-      const isOffer = p.type === 'offer';
-      const isNew = p.type === 'new';
-
-      if (isNormal) tabCounts.produtos++;
-      if (isOffer) tabCounts.ofertas++;
-      if (isNew) tabCounts.lancamentos++;
-    });
-
-    return { tabCounts };
-  }, [products]);
+    return {
+      tabCounts: {
+        produtos: tabProductsMap.produtos.length,
+        ofertas: tabProductsMap.ofertas.length,
+        lancamentos: tabProductsMap.lancamentos.length,
+      }
+    };
+  }, [tabProductsMap]);
 
   const filteredProducts = useMemo(() => {
-    let result = products.filter(p => {
-      // Tab Filter
-      if (activeTab === 'produtos' && p.type !== 'normal') return false;
-      if (activeTab === 'ofertas' && p.type !== 'offer') return false;
-      if (activeTab === 'lancamentos' && p.type !== 'new') return false;
-      
+    const currentTabProducts = tabProductsMap[activeTab] || [];
+
+    let result = currentTabProducts.filter(p => {
       // Manufacturer Filter (Multiple Selection - OR within group)
       if (selectedManufacturers.length > 0 && !selectedManufacturers.includes(p.manufacturer)) return false;
 
@@ -784,7 +887,7 @@ export default function ProductCatalog() {
       if (statusFilters.includes('in-stock') && p.stock <= 0) return false;
       if (statusFilters.includes('out-stock') && p.stock > 0) return false;
       if (statusFilters.includes('new') && p.type !== 'new') return false;
-      if (statusFilters.includes('promotional') && p.type !== 'offer') return false;
+      if (statusFilters.includes('promotional') && p.type !== 'offer' && p.discount <= 0) return false;
 
       // Price Filter
       if (p.finalPrice < priceRange[0] || p.finalPrice > priceRange[1]) return false;
@@ -891,11 +994,17 @@ export default function ProductCatalog() {
     }
 
     return sortArr;
-  }, [products, activeTab, search, selectedManufacturers, selectedCategories, statusFilters, sortBy, profile?.role]);
+  }, [tabProductsMap, activeTab, search, selectedManufacturers, selectedCategories, statusFilters, priceRange, sortBy, profile?.role]);
 
   const displayedProducts = useMemo(() => {
     return filteredProducts.slice(0, displayLimit);
   }, [filteredProducts, displayLimit]);
+
+  useEffect(() => {
+    if (profile?.role === 'cliente' && activeTab !== 'produtos') {
+      setActiveTab('produtos');
+    }
+  }, [profile?.role, activeTab]);
 
   useEffect(() => {
     const sentinel = document.getElementById('load-more-sentinel');
@@ -1035,7 +1144,24 @@ export default function ProductCatalog() {
     }
   };
 
-  const cartTotal = cart.reduce((sum, item) => sum + item.finalPrice * item.quantity, 0);
+  const cartSubtotal = useMemo(() => {
+    return cart.reduce((sum, item) => {
+      const enriched = enrichOrderItem(item, products);
+      return sum + enriched.salePrice * item.quantity;
+    }, 0);
+  }, [cart, products]);
+
+  const cartTotal = useMemo(() => {
+    return cart.reduce((sum, item) => {
+      const enriched = enrichOrderItem(item, products);
+      return sum + enriched.finalPrice * item.quantity;
+    }, 0);
+  }, [cart, products]);
+
+  const cartDiscount = useMemo(() => {
+    return Math.max(0, cartSubtotal - cartTotal);
+  }, [cartSubtotal, cartTotal]);
+
   const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   const quickOrderProducts = useMemo(() => {
@@ -1070,10 +1196,11 @@ export default function ProductCatalog() {
   }, [cart]);
 
   const totalOffersAvailable = useMemo(() => {
-    return products.filter(p => p.type === 'offer' && p.stock > 0).length;
-  }, [products]);
+    return tabProductsMap.ofertas.filter(p => p.stock > 0).length;
+  }, [tabProductsMap]);
 
   const generateOrderPDF = (order: any, items: OrderItem[]) => {
+    const enrichedItems = items.map(item => enrichOrderItem(item, products));
     const doc = new jsPDF();
     const pageWidth = doc.internal.pageSize.width;
     const orange: [number, number, number] = [255, 107, 0];
@@ -1148,7 +1275,7 @@ export default function ProductCatalog() {
 
     currentY += 6;
 
-    const groupedItems = items.reduce((acc: any, item) => {
+    const groupedItems = enrichedItems.reduce((acc: any, item) => {
       const manufacturer = item.manufacturer || 'GERAL';
       if (!acc[manufacturer]) acc[manufacturer] = [];
       acc[manufacturer].push(item);
@@ -1267,8 +1394,8 @@ export default function ProductCatalog() {
       currentY = 20;
     }
 
-    const totalSalePrice = items.reduce((sum, item) => sum + (item.salePrice * item.quantity), 0);
-    const totalFinalPrice = items.reduce((sum, item) => sum + (item.finalPrice * item.quantity), 0);
+    const totalSalePrice = enrichedItems.reduce((sum, item) => sum + (item.salePrice * item.quantity), 0);
+    const totalFinalPrice = enrichedItems.reduce((sum, item) => sum + (item.finalPrice * item.quantity), 0);
     const totalDiscount = totalSalePrice - totalFinalPrice;
 
     if (profile?.role === 'promotor') {
@@ -1621,6 +1748,7 @@ export default function ProductCatalog() {
 
 
   const generateOrderExcel = async (order: any, items: OrderItem[]) => {
+    const enrichedItems = items.map(item => enrichOrderItem(item, products));
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Pedido');
 
@@ -1674,7 +1802,7 @@ export default function ProductCatalog() {
 
     worksheet.addRow([]);
 
-    const groupedItems = items.reduce((acc: any, item) => {
+    const groupedItems = enrichedItems.reduce((acc: any, item) => {
       const manufacturer = item.manufacturer || 'GERAL';
       if (!acc[manufacturer]) acc[manufacturer] = [];
       acc[manufacturer].push(item);
@@ -1769,8 +1897,8 @@ export default function ProductCatalog() {
       worksheet.addRow([]);
     });
 
-    const totalSalePrice = items.reduce((sum, item) => sum + (item.salePrice * item.quantity), 0);
-    const totalFinalPrice = items.reduce((sum, item) => sum + (item.finalPrice * item.quantity), 0);
+    const totalSalePrice = enrichedItems.reduce((sum, item) => sum + (item.salePrice * item.quantity), 0);
+    const totalFinalPrice = enrichedItems.reduce((sum, item) => sum + (item.finalPrice * item.quantity), 0);
     const totalDiscount = totalSalePrice - totalFinalPrice;
 
     const finalHeader = worksheet.addRow(['RESUMO GERAL']);
@@ -1834,28 +1962,43 @@ export default function ProductCatalog() {
   };
 
   const sendToWhatsApp = (order: any, items: OrderItem[]) => {
-    const recipientPhone = profile?.phone;
+    const recipientPhone = '5586999647573';
 
-    if (!recipientPhone) {
-      toast.error('Seu telefone não está cadastrado no sistema para envio do WhatsApp');
-      return;
-    }
+    const enrichedItems = items.map(item => enrichOrderItem(item, products));
 
     let message = `🛍️ *VENDAS HBN1*\n\n`;
     message += `🏪 *${order.clientName}*\n`;
-    message += `🆔 ID: ${order.clientId}\n`;
-    message += `👤 Vendedor: ${order.seller}\n\n`;
-    message += `📦 *ITENS:*\n────────────────\n`;
+    if (order.clientId) message += `🆔 ID: ${order.clientId}\n`;
+    if (order.seller) message += `👤 Vendedor: ${order.seller}\n\n`;
+    message += `📦 *ITENS DO PEDIDO:*\n────────────────\n`;
     
-    items.forEach((item, idx) => {
+    let totalSubtotal = 0;
+    let totalFinalPrice = 0;
+
+    enrichedItems.forEach((item, idx) => {
+      const rowSubtotal = item.salePrice * item.quantity;
+      const rowTotal = item.finalPrice * item.quantity;
+
+      totalSubtotal += rowSubtotal;
+      totalFinalPrice += rowTotal;
+
       message += `\n${idx + 1}. *${item.description}*\n`;
-      message += `   ${item.quantity} un × ${formatCurrency(item.finalPrice)} = ${formatCurrency(item.quantity * item.finalPrice)}\n`;
+      if (item.discount > 0 && item.salePrice > item.finalPrice) {
+        const discFormatted = item.discount.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+        message += `   ${item.quantity} un × ~${formatCurrency(item.salePrice)}~ ${formatCurrency(item.finalPrice)} (-${discFormatted}%) = ${formatCurrency(rowTotal)}\n`;
+      } else {
+        message += `   ${item.quantity} un × ${formatCurrency(item.finalPrice)} = ${formatCurrency(rowTotal)}\n`;
+      }
     });
     
-    const totalByItems = items.reduce((sum, item) => sum + (item.finalPrice * item.quantity), 0);
-    
+    const totalDiscount = Math.max(0, totalSubtotal - totalFinalPrice);
+
     message += `\n────────────────\n`;
-    message += `💰 *TOTAL: ${formatCurrency(totalByItems)}*\n\n`;
+    message += `💵 Subtotal: ${formatCurrency(totalSubtotal)}\n`;
+    if (totalDiscount > 0) {
+      message += `🏷️ Desconto Total: -${formatCurrency(totalDiscount)}\n`;
+    }
+    message += `💰 *TOTAL A PAGAR: ${formatCurrency(totalFinalPrice)}*\n\n`;
     message += `✅ Aguardo confirmação!`;
 
     const purePhone = recipientPhone.replace(/\D/g, '');
@@ -1877,6 +2020,9 @@ export default function ProductCatalog() {
     if (!selectedClient && profile?.role !== 'promotor') return;
     if (!profile || cart.length === 0) return;
 
+    const enrichedCart = cart.map(item => enrichOrderItem(item, products));
+    const cartTotalEnriched = enrichedCart.reduce((sum, item) => sum + item.finalPrice * item.quantity, 0);
+
     const orderData: Omit<Order, 'id'> = {
       date: new Date().toISOString(),
       clientId: selectedClient?.id || 'PROMOTOR',
@@ -1886,9 +2032,9 @@ export default function ProductCatalog() {
       email: selectedClient?.email || profile?.email || '',
       seller: profile.name,
       phone: selectedClient?.phone || profile?.phone || '',
-      total: cartTotal,
+      total: cartTotalEnriched,
       status: 'Novo',
-      items: cart,
+      items: enrichedCart,
       observation: '',
     };
 
@@ -1911,16 +2057,18 @@ export default function ProductCatalog() {
       toast.success('Pedido registrado com sucesso!', { id: 'checkout' });
       
       setLastOrder(finalOrder);
-      setLastOrderItems([...cart]);
+      setLastOrderItems(enrichedCart);
       setShowOrderSuccess(true);
       
       // If not promotor, send to WhatsApp
       if (profile?.role !== 'promotor') {
-        sendToWhatsApp(finalOrder, cart);
+        sendToWhatsApp(finalOrder, enrichedCart);
       }
       
-      generateOrderPDF(finalOrder, cart);
-      await generateOrderExcel(finalOrder, cart);
+      if (profile?.role !== 'cliente') {
+        generateOrderPDF(finalOrder, enrichedCart);
+        await generateOrderExcel(finalOrder, enrichedCart);
+      }
 
       setCart([]);
       setManualClientName('');
@@ -1933,8 +2081,8 @@ export default function ProductCatalog() {
       }
     } catch (error) {
       if (error instanceof Error && 'name' in error && error.name === 'ZodError') {
-        const firstError = (error as any).errors[0]?.message || 'Erro de valida\u00E7\u00E3o';
-        toast.error(`Falha na valida\u00E7\u00E3o: ${firstError}`, { id: 'checkout' });
+        const firstError = (error as any).errors[0]?.message || 'Erro de validação';
+        toast.error(`Falha na validação: ${firstError}`, { id: 'checkout' });
       } else {
         console.error('Checkout error:', error);
         toast.error('Erro ao registrar pedido', { id: 'checkout' });
@@ -1945,15 +2093,13 @@ export default function ProductCatalog() {
   };
 
   const handleCheckout = async () => {
-    if (!selectedClient || !profile || cart.length === 0) return;
+    if ((!selectedClient && profile?.role !== 'promotor') || !profile || cart.length === 0) return;
 
-    if (!showOfferCoverage && offersInCart < totalOffersAvailable * 0.5) {
-      setShowOfferCoverage(true);
-      return;
+    if (tabProductsMap.ofertas && tabProductsMap.ofertas.length > 0) {
+      setShowOfferSuggestions(true);
+    } else {
+      await finalizeOrder();
     }
-
-    // Show offer suggestions modal instead of finishing
-    setShowOfferSuggestions(true);
   };
 
   const handleAddBulkToCart = () => {
@@ -2014,12 +2160,18 @@ export default function ProductCatalog() {
               whileHover={{ scale: 1.1, backgroundColor: "rgba(255,255,255,0.3)" }}
               whileTap={{ scale: 0.9 }}
               onClick={async () => {
-                await setSelectedClient(null);
-                navigate('/');
+                if (profile?.role === 'cliente') {
+                  await logout();
+                  navigate('/login');
+                } else {
+                  await setSelectedClient(null);
+                  navigate('/');
+                }
               }} 
               className="p-2 bg-white/10 rounded-full text-white transition-colors"
+              title={profile?.role === 'cliente' ? "Sair da Conta" : "Voltar aos clientes"}
           >
-            <ChevronLeft size={24} />
+            {profile?.role === 'cliente' ? <LogOut size={20} /> : <ChevronLeft size={24} />}
           </motion.button>
           
           {/* Star Logo */}
@@ -2031,10 +2183,10 @@ export default function ProductCatalog() {
 
           <div className="flex-1 min-w-0 text-center">
             <h1 className="text-white font-display font-bold text-base leading-tight tracking-tight uppercase truncate">
-              {profile?.role === 'promotor' ? 'Catálogo Promotor' : (selectedClient?.tradeName || selectedClient?.name)}
+              {profile?.role === 'promotor' ? 'Catálogo Promotor' : (selectedClient?.tradeName || selectedClient?.name || profile?.name)}
             </h1>
             <p className="text-white/85 text-[10px] font-medium uppercase tracking-wider font-mono">
-              {profile?.role === 'promotor' ? getRegionalLabel(profile?.regional) : `${selectedClient?.city} • ${selectedClient?.id}`}
+              {profile?.role === 'promotor' ? getRegionalLabel(profile?.regional) : selectedClient?.cnpj ? `CNPJ: ${selectedClient.cnpj}` : `${selectedClient?.city || ''} • ${selectedClient?.id || ''}`}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -2114,7 +2266,7 @@ export default function ProductCatalog() {
 
       <div className="bg-white dark:bg-[#1E1E1E] border-b border-gray-100 dark:border-gray-800">
         <div className="max-w-5xl mx-auto flex">
-          {['produtos', 'ofertas', 'lancamentos'].map(tab => (
+          {(profile?.role === 'cliente' ? ['produtos'] : ['produtos', 'ofertas', 'lancamentos']).map(tab => (
             <motion.button 
               key={tab} 
               whileHover={{ backgroundColor: "rgba(255, 90, 0, 0.05)" }}
@@ -2516,7 +2668,7 @@ export default function ProductCatalog() {
                   ))}
                 </AnimatePresence>
                 <span className="text-[10px] font-bold text-gray-400 ml-auto">
-                  Resultados: <b>{filteredProducts.length}</b> de {products.length}
+                  Resultados: <b>{filteredProducts.length}</b> de {tabProductsMap[activeTab]?.length || 0}
                 </span>
               </div>
             </div>
@@ -2667,7 +2819,7 @@ export default function ProductCatalog() {
               <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/50">
                 <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest pl-2">Sugestões Especiais</p>
                 <div className="grid grid-cols-1 gap-3">
-                  {products.filter(p => p.type === 'offer').map((p, i) => {
+                  {tabProductsMap.ofertas.map((p, i) => {
                     const inCart = cart.find(item => item.id === p.id);
                     const wasSold = soldProductIds.has(p.id);
                     const hasStock = p.stock > 0;
@@ -2818,7 +2970,14 @@ export default function ProductCatalog() {
                           <div className="flex-1">
                             <h4 className="text-xs font-bold text-gray-900 dark:text-white truncate">{item.description}</h4>
                             <div className="flex items-center justify-between mt-2">
-                              <span className="text-sm font-black text-orange-600">{formatCurrency(item.finalPrice)}</span>
+                              <div className="flex flex-col">
+                                {item.discount > 0 && item.salePrice > item.finalPrice && (
+                                  <span className="text-[10px] text-gray-400 line-through">
+                                    {formatCurrency(item.salePrice)}
+                                  </span>
+                                )}
+                                <span className="text-sm font-black text-orange-600">{formatCurrency(item.finalPrice)}</span>
+                              </div>
                               <div className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 rounded-lg px-2 py-1">
                                 <motion.button whileHover={{ scale: 1.2 }} whileTap={{ scale: 0.8 }} onClick={() => updateQuantity(item.id, -1)} className="text-red-600"><Minus size={14} /></motion.button>
                                 <input 
@@ -2847,8 +3006,21 @@ export default function ProductCatalog() {
                 )}
               </div>
               <div className="p-4 bg-white dark:bg-[#1E1E1E] border-t border-gray-100 dark:border-gray-800 pb-safe">
-                <div className="flex justify-between items-center mb-4">
-                   <span className="font-bold">Total:</span><span className="text-xl font-black text-orange-600">{formatCurrency(cartTotal)}</span>
+                <div className="space-y-1 mb-4 text-xs font-medium">
+                  <div className="flex justify-between text-gray-500">
+                    <span>Subtotal:</span>
+                    <span>{formatCurrency(cartSubtotal)}</span>
+                  </div>
+                  {cartDiscount > 0 && (
+                    <div className="flex justify-between text-green-600 font-bold">
+                      <span>Descontos:</span>
+                      <span>- {formatCurrency(cartDiscount)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center pt-2 border-t border-gray-100 dark:border-gray-800">
+                    <span className="font-bold text-sm text-gray-900 dark:text-white">Total a pagar:</span>
+                    <span className="text-xl font-black text-orange-600">{formatCurrency(cartTotal)}</span>
+                  </div>
                 </div>
                 {profile?.role === 'promotor' ? (
                   <div className="flex flex-col gap-2">
@@ -3331,6 +3503,108 @@ export default function ProductCatalog() {
                         </button>
                       )}
                     </div>
+
+                    {/* Last Purchase Info Card (Bottom Left) */}
+                    {(() => {
+                      const lastPurchase = (() => {
+                        if (!product || !lastOrders || lastOrders.length === 0) return null;
+                        const sorted = [...lastOrders].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+                        for (const order of sorted) {
+                          if (!order.items || !Array.isArray(order.items)) continue;
+                          const found = order.items.find(i => 
+                            (i.id && String(i.id).trim() === String(product.id).trim()) || 
+                            (product.ean && i.ean && String(i.ean).trim() === String(product.ean).trim())
+                          );
+                          if (found && found.quantity > 0) {
+                            const finalPrice = Number(found.finalPrice || 0) || Number(product.finalPrice || 0);
+                            const itemSalePrice = Number(found.salePrice || 0);
+                            
+                            let discountPercent = Number(found.discount || 0);
+
+                            if (discountPercent <= 0) {
+                              if (itemSalePrice > finalPrice && itemSalePrice > 0) {
+                                discountPercent = ((itemSalePrice - finalPrice) / itemSalePrice) * 100;
+                              } else if (product.salePrice > finalPrice && product.salePrice > 0) {
+                                discountPercent = ((product.salePrice - finalPrice) / product.salePrice) * 100;
+                              } else if (product.discount > 0) {
+                                discountPercent = product.discount;
+                              }
+                            }
+
+                            const roundedDiscount = applyCustomRounding(discountPercent);
+
+                            return {
+                              date: order.date,
+                              quantity: found.quantity,
+                              price: finalPrice || itemSalePrice || product.finalPrice || 0,
+                              salePrice: itemSalePrice || product.salePrice || finalPrice,
+                              discountPercent: roundedDiscount,
+                            };
+                          }
+                        }
+                        return null;
+                      })();
+
+                      const formatDate = (dateStr: string) => {
+                        try {
+                          const d = new Date(dateStr);
+                          if (isNaN(d.getTime())) return dateStr;
+                          return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                        } catch (e) {
+                          return dateStr;
+                        }
+                      };
+
+                      if (lastPurchase) {
+                        return (
+                          <div className="bg-blue-50/80 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30 p-3.5 rounded-2xl space-y-2 shadow-sm">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-1.5 text-blue-700 dark:text-blue-300 font-bold text-xs">
+                                <ShoppingBag size={15} className="text-blue-600 dark:text-blue-400" />
+                                <span>Última Compra do Item</span>
+                              </div>
+                              <span className="bg-blue-600 text-white text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase tracking-wider shadow-sm">
+                                {lastPurchase.quantity} {lastPurchase.quantity === 1 ? 'unidade' : 'unidades'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-xs pt-1.5 border-t border-blue-100 dark:border-blue-900/30">
+                              <span className="text-gray-600 dark:text-gray-400 font-medium">Data da Compra:</span>
+                              <span className="font-extrabold text-gray-900 dark:text-gray-100">
+                                {formatDate(lastPurchase.date)}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="text-gray-600 dark:text-gray-400 font-medium">Último Desconto:</span>
+                              <span className="font-extrabold text-green-600 dark:text-green-400">
+                                {lastPurchase.discountPercent > 0 
+                                  ? `${lastPurchase.discountPercent.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}% OFF`
+                                  : 'Sem desconto'}
+                              </span>
+                            </div>
+                            {lastPurchase.price > 0 && (
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="text-gray-600 dark:text-gray-400 font-medium">Preço Unitário Pago:</span>
+                                <span className="font-bold text-gray-900 dark:text-gray-100">
+                                  {formatCurrency(lastPurchase.price)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="bg-gray-50 dark:bg-gray-800/40 border border-gray-100 dark:border-gray-800 p-3.5 rounded-2xl flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-1.5 text-gray-500 dark:text-gray-400">
+                            <ShoppingBag size={15} />
+                            <span className="font-medium">Última Compra:</span>
+                          </div>
+                          <span className="font-bold text-gray-400 dark:text-gray-500 italic">
+                            Nenhuma compra registrada
+                          </span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Right Column: Product details & actions */}
@@ -3476,10 +3750,14 @@ export default function ProductCatalog() {
                 {profile?.role !== 'promotor' && (
                   <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => sendToWhatsApp(lastOrder, lastOrderItems)} className="w-full flex items-center justify-between p-4 bg-green-500 text-white rounded-2xl font-bold shadow-lg"><MessageCircle /><span>Enviar WhatsApp</span><ExternalLink /></motion.button>
                 )}
-                <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => generateOrderPDF(lastOrder, lastOrderItems)} className="w-full flex items-center justify-between p-4 bg-orange-50 rounded-2xl font-bold text-orange-700 border border-orange-100"><FileText /><span>Baixar PDF</span><Download /></motion.button>
-                <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => generateOrderExcel(lastOrder, lastOrderItems)} className="w-full flex items-center justify-between p-4 bg-gray-50 rounded-2xl font-bold text-gray-700 border border-gray-200"><FileSpreadsheet /><span>Baixar Excel</span><Download /></motion.button>
+                {profile?.role !== 'cliente' && (
+                  <>
+                    <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => generateOrderPDF(lastOrder, lastOrderItems)} className="w-full flex items-center justify-between p-4 bg-orange-50 rounded-2xl font-bold text-orange-700 border border-orange-100"><FileText /><span>Baixar PDF</span><Download /></motion.button>
+                    <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={() => generateOrderExcel(lastOrder, lastOrderItems)} className="w-full flex items-center justify-between p-4 bg-gray-50 rounded-2xl font-bold text-gray-700 border border-gray-200"><FileSpreadsheet /><span>Baixar Excel</span><Download /></motion.button>
+                  </>
+                )}
                 
-                {profile?.role !== 'promotor' && pendingCarts.length > 0 && (
+                {profile?.role !== 'promotor' && profile?.role !== 'cliente' && pendingCarts.length > 0 && (
                   <motion.button 
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
@@ -3492,8 +3770,19 @@ export default function ProductCatalog() {
                   </motion.button>
                 )}
               </div>
-              <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={async () => { setShowOrderSuccess(false); await setSelectedClient(null); navigate('/'); }} className="w-full bg-gray-900 text-white py-4 rounded-2xl font-bold">
-                {profile?.role === 'promotor' ? 'Novo Pedido' : 'Voltar ao Início'}
+              <motion.button 
+                whileHover={{ scale: 1.02 }} 
+                whileTap={{ scale: 0.98 }} 
+                onClick={async () => { 
+                  setShowOrderSuccess(false); 
+                  if (profile?.role !== 'cliente') {
+                    await setSelectedClient(null); 
+                    navigate('/'); 
+                  }
+                }} 
+                className="w-full bg-gray-900 text-white py-4 rounded-2xl font-bold"
+              >
+                {profile?.role === 'promotor' ? 'Novo Pedido' : profile?.role === 'cliente' ? 'Concluir' : 'Voltar ao Início'}
               </motion.button>
             </motion.div>
           </div>

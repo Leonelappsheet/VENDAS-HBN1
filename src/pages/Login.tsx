@@ -11,7 +11,12 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
-  if (profile) return <Navigate to="/" />;
+  if (profile) {
+    if (profile.role === 'cliente') {
+      return <Navigate to="/catalog" replace />;
+    }
+    return <Navigate to="/" replace />;
+  }
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -58,18 +63,18 @@ export default function Login() {
             VENDAS NAZÁRIA
           </h1>
           <p className="text-slate-500 text-xs mt-1.5 font-medium tracking-wide uppercase">
-            Distribuidora Farmacêutica — Portal do Vendedor
+            Distribuidora Farmacêutica — Portal de Vendas
           </p>
         </div>
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold text-slate-700 mb-1 ml-1 uppercase tracking-wider">Usuário</label>
+            <label className="block text-xs font-bold text-slate-700 mb-1 ml-1 uppercase tracking-wider">Usuário ou CNPJ</label>
             <input
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="Digite seu usuário"
+              placeholder="Digite seu usuário ou CNPJ"
               className="w-full bg-slate-50 border border-slate-200 focus:border-brand-orange focus:ring-2 focus:ring-brand-orange/10 rounded-2xl px-4 py-3 outline-none transition-all font-medium text-slate-900"
             />
           </div>
@@ -84,6 +89,10 @@ export default function Login() {
               className="w-full bg-slate-50 border border-slate-200 focus:border-brand-orange focus:ring-2 focus:ring-brand-orange/10 rounded-2xl px-4 py-3 outline-none transition-all font-medium text-slate-900"
             />
           </div>
+
+          <p className="text-[11px] text-slate-500 text-center leading-snug font-medium pt-1">
+            Clientes: acesse informando seu <strong>CNPJ</strong> (com ou sem pontuação) e os <strong>6 primeiros dígitos</strong> do CNPJ como senha.
+          </p>
 
           {error && (
             <p className="text-red-600 text-xs font-bold text-center mt-2">{error}</p>

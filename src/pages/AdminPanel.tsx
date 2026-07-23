@@ -1274,10 +1274,10 @@ export default function AdminPanel() {
     }
     
     if (action === "update-catalog") {
-      var industria = data.industria;
-      var dados = data.dados;
+      var industria = data.industria || "UNILEVER";
+      var dados = data.dados || [];
+      var defaultExpiryDate = data.defaultExpiryDate || "";
       
-      var sheetsToSync = ["Produtos", "Ofertas", "Lancamentos"];
       var INDUSTRY_MAPPINGS = {
         'DANONE': { id: 1, ean: 0, desc: 3, stock: 9, price: 5, discount: 4, final: 7 },
         'UNILEVER': { id: 1, ean: 2, desc: 3, stock: 7, price: 8, discount: 11, final: 12 }, 
@@ -1286,48 +1286,86 @@ export default function AdminPanel() {
         'OMRON': { id: 5, ean: 3, desc: 4, stock: 13, price: 6, discount: 7, final: 8 }
       };
       
-      var mapping = INDUSTRY_MAPPINGS[industria.toUpperCase()];
-      if (!mapping) {
-        return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Mapeamento da indústria " + industria + " não encontrado"}))
-          .setMimeType(ContentService.MimeType.JSON)
-          .setHeaders(corsHeaders);
+      var mapping = INDUSTRY_MAPPINGS[industria.toUpperCase()] || INDUSTRY_MAPPINGS['UNILEVER'];
+      var prodSheet = ss.getSheetByName("Produtos");
+      if (!prodSheet) {
+        prodSheet = ss.insertSheet("Produtos");
+        prodSheet.appendRow(["ID", "EAN", "Descrição", "Estoque", "Preço Venda", "Desconto", "Preço Final", "Validade", "Categoria", "Fabricante"]);
       }
       
-      for (var s = 0; s < sheetsToSync.length; s++) {
-        var sheetName = sheetsToSync[s];
-        var targetSheet = ss.getSheetByName(sheetName);
-        if (!targetSheet) continue;
+      var prodValues = prodSheet.getDataRange().getValues();
+      var existingMap = {};
+      for (var r = 1; r < prodValues.length; r++) {
+        var pId = String(prodValues[r][0] || "").trim();
+        var pEan = String(prodValues[r][1] || "").trim();
+        if (pId) existingMap[pId] = r + 1;
+        if (pEan) existingMap[pEan] = r + 1;
+      }
+      
+      var updatedCount = 0;
+      var newCount = 0;
+      var log = [];
+      var indName = industria.split(' ')[0].toUpperCase();
+      
+      for (var d = 0; d < dados.length; d++) {
+        var item = dados[d];
+        if (!Array.isArray(item)) continue;
         
-        var values = targetSheet.getDataRange().getValues();
-        var idColIdx = 0;
-        var eanColIdx = 1;
+        var itemId = String(item[mapping.id] || "").trim();
+        var itemEan = String(item[mapping.ean] || "").trim().replace(/[^0-9]/g, '');
+        var itemDesc = String(item[mapping.desc] || "").trim();
+        var itemStock = String(item[mapping.stock] || "").trim() || "100";
+        var itemPrice = Number(String(item[mapping.price] || 0).replace(',', '.')) || 0;
+        var itemDisc = Number(String(item[mapping.discount] || 0).replace(',', '.')) || 0;
+        var itemFinal = Number(String(item[mapping.final] || 0).replace(',', '.')) || itemPrice;
         
-        for (var d = 0; d < dados.length; d++) {
-          var item = dados[d];
-          var itemId = String(item[mapping.id] || "").trim();
-          var itemEan = String(item[mapping.ean] || "").trim();
-          
-          if (!itemId && !itemEan) continue;
-          
-          for (var r = 1; r < values.length; r++) {
-            var rowId = String(values[r][idColIdx]).trim();
-            var rowEan = String(values[r][eanColIdx]).trim();
-            
-            if ((itemId && rowId === itemId) || (itemEan && rowEan === itemEan)) {
-              var stockVal = Number(item[mapping.stock]) || 0;
-              var priceVal = Number(item[mapping.final]) || Number(item[mapping.price]) || 0;
-              
-              targetSheet.getRange(r + 1, 4).setValue(stockVal);
-              targetSheet.getRange(r + 1, 5).setValue(priceVal);
-              break;
-            }
+        // Smart fallback scan if missing ID/EAN or desc
+        if (!itemId || !itemEan) {
+          for (var col = 0; col < item.length; col++) {
+            var cellStr = String(item[col] || "").trim();
+            if (!itemEan && /^\d{8,14}$/.test(cellStr)) itemEan = cellStr;
+            if (!itemId && /^\d{5,7}$/.test(cellStr)) itemId = cellStr;
           }
+        }
+        
+        if (!itemId && !itemEan) continue;
+        if (itemDesc.toLowerCase().indexOf("descri") !== -1 || itemId.toLowerCase().indexOf("id") !== -1) continue;
+        
+        var existingRowIndex = existingMap[itemId] || existingMap[itemEan];
+        
+        if (existingRowIndex) {
+          prodSheet.getRange(existingRowIndex, 4).setValue(itemStock);
+          prodSheet.getRange(existingRowIndex, 5).setValue(itemPrice);
+          prodSheet.getRange(existingRowIndex, 6).setValue(itemDisc ? itemDisc + "%" : "0%");
+          prodSheet.getRange(existingRowIndex, 7).setValue(itemFinal);
+          updatedCount++;
+        } else {
+          prodSheet.appendRow([
+            itemId,
+            itemEan,
+            itemDesc || ("Produto " + (itemId || itemEan)),
+            itemStock,
+            itemPrice,
+            itemDisc ? itemDisc + "%" : "0%",
+            itemFinal,
+            defaultExpiryDate,
+            "Geral",
+            indName
+          ]);
+          newCount++;
+          log.push("[NOVO] " + (itemDesc || itemId || itemEan) + " -> R$ " + itemFinal);
         }
       }
       
-      return ContentService.createTextOutput(JSON.stringify({sucesso: true}))
-        .setMimeType(ContentService.MimeType.JSON)
-        .setHeaders(corsHeaders);
+      return ContentService.createTextOutput(JSON.stringify({
+        sucesso: true,
+        industry: industria,
+        updatedCount: updatedCount,
+        newCount: newCount,
+        log: log
+      }))
+      .setMimeType(ContentService.MimeType.JSON)
+      .setHeaders(corsHeaders);
     }
     
     return ContentService.createTextOutput(JSON.stringify({sucesso: false, error: "Ação não reconhecida"}))

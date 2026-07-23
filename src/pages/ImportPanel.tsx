@@ -382,7 +382,7 @@ export default function ImportPanel() {
             
              // Basic validation and mapping
              const mapped = rows.map((row: any) => {
-               const rawEan = String(row.EAN || row.ean || row['Código de Barras'] || row['Codigo Barras'] || row['CODIGO EAN'] || row.CODIGO || row['EAN13'] || '');
+               const rawEan = String(row.EAN || row.ean || row.Barras || row.barras || row['Barras'] || row['BARRAS'] || row['Código Barras'] || row['Codigo Barras'] || row['Código de Barras'] || row['CODIGO EAN'] || row.CODIGO || row['EAN13'] || '');
                const ean = normalizeEAN(rawEan);
                const quantity = parseInt(row.Quantidade || row.qtd || row.qty || row['Qtd'] || row['QTD'] || row['QUANT'] || row['QUANTIDADE'] || 1);
                
@@ -504,6 +504,45 @@ export default function ImportPanel() {
                 const line = pageLines[lineIdx];
                 const trimmedLine = line.trim();
                 if (!trimmedLine) continue;
+
+                // A.0.0 Sta Vitoria / Nazaria Store block header (e.g. "Loja: 01 - STA VITORIA 01 - CNPJ: 23917429000143")
+                const lojaHeaderMatch = trimmedLine.match(/^Loja:\s*(\d+)\s*[-–—]?\s*(.*?)(?:\s*[-–—]?\s*CNPJ:\s*([\d\.\/\-]+))?$/i);
+                if (lojaHeaderMatch) {
+                  const lojaNum = lojaHeaderMatch[1];
+                  let rawStoreName = lojaHeaderMatch[2] ? lojaHeaderMatch[2].replace(/[-–—]\s*CNPJ:.*$/i, '').trim() : '';
+                  let storeName = rawStoreName || `STA VITORIA ${lojaNum}`;
+                  const rawCnpj = lojaHeaderMatch[3] || '';
+                  const cnpj = rawCnpj.replace(/[^\d]/g, '');
+
+                  currentClientObj = {
+                    clientName: storeName,
+                    cnpj: cnpj,
+                    items: [],
+                    headerInfo: {
+                      fornecedor: 'NAZARIA DISTRIBUIDORA',
+                      condPgto: '',
+                      status: 'Pendente',
+                      dataEntrega: '',
+                      cotacao: `Loja ${lojaNum}`
+                    }
+                  };
+                  importResults.push(currentClientObj);
+                  unmatchedBuffer = [];
+
+                  const matchedClient = allClients.find(c => {
+                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                    if (cnpj && dbCnpj === cnpj) return true;
+                    return c.name.toLowerCase().includes(storeName.toLowerCase()) || storeName.toLowerCase().includes(c.name.toLowerCase());
+                  });
+                  if (matchedClient) {
+                    currentClientObj.client = matchedClient;
+                    currentClientObj.clientName = matchedClient.name;
+                    if (!currentClientObj.cnpj && matchedClient.cnpj) {
+                      currentClientObj.cnpj = matchedClient.cnpj.replace(/[^\d]/g, '');
+                    }
+                  }
+                  continue;
+                }
 
                 // Pre-identify client header for Pedido de Compra / Comercialização format
                 if (isPedidoCompraComercializacao && !currentClientObj) {
@@ -866,6 +905,67 @@ export default function ImportPanel() {
                 }
 
                 // 2. Check for product patterns
+                // A.0.0 Sta Vitoria / Nazaria Pedido de Compra product pattern
+                // e.g. "080229 7891150095595 COND DOVE BOND INT REP 250ML UN 2,00 24,47 48,94"
+                // e.g. "024612 7791293025537 DES REXONA AEROSOL ANTIBACTERIAL MEN 90G UN UNIDADE com 1 6,00 11,80 70,80"
+                // e.g. "078960 0000075076825 DES REXONA CLINICAL MEN CLEAN 58G 96H VD 6,00 23,14 138,81"
+                const staVitoriaProdRegex = /^(?:(\d{5,7})\s+)?(\d{8,14})\s+(.*?)\s+([A-Z]{2,3})(?:\s+(UNIDADE\s+com\s+\d+|[A-Za-z0-9\s\/]{1,20}))?\s+(\d+[\d\.,]*)\s+(\d+[\d\.,]*,\d{2}|\d+)\s+(\d+[\d\.,]*,\d{2})$/i;
+                const staVitoriaMatch = trimmedLine.match(staVitoriaProdRegex);
+                if (staVitoriaMatch) {
+                  const code = staVitoriaMatch[1] || '';
+                  const rawEan = staVitoriaMatch[2];
+                  const ean = normalizeEAN(rawEan);
+                  const desc = staVitoriaMatch[3].trim();
+                  const unit = staVitoriaMatch[4];
+                  const qtyStr = staVitoriaMatch[6];
+                  const priceStr = staVitoriaMatch[7];
+
+                  const quantity = parseFloat(qtyStr.replace(/\./g, '').replace(',', '.'));
+                  const priceVal = parseFloat(priceStr.replace(/\./g, '').replace(',', '.'));
+
+                  if (!currentClientObj) {
+                    const pageTopText = pageLines.slice(0, 10).join(' ');
+                    const topCnpjMatch = pageTopText.match(/CNPJ:?\s*(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/i);
+                    const topCnpj = topCnpjMatch ? topCnpjMatch[1].replace(/[^\d]/g, '') : '';
+                    
+                    const matchedClient = allClients.find(c => {
+                      const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                      return topCnpj && dbCnpj === topCnpj;
+                    });
+
+                    currentClientObj = {
+                      clientName: matchedClient?.name || 'Cliente Não Identificado',
+                      cnpj: topCnpj,
+                      client: matchedClient || null,
+                      items: [],
+                      headerInfo: { fornecedor: 'NAZARIA DISTRIBUIDORA', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: 'PEDIDO DE COMPRA' }
+                    };
+                    importResults.push(currentClientObj);
+                  }
+
+                  const product = allProducts.find(p => 
+                    normalizeEAN(p.ean) === ean || 
+                    (code && p.id && String(p.id).trim() === String(code).trim())
+                  );
+                  const finalEan = product?.ean || ean;
+                  const inferredMfr = product?.manufacturer || inferManufacturer(desc) || 'OUTROS';
+
+                  if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean || (code && item.code === code))) {
+                    currentClientObj.items.push({
+                      code,
+                      ean: finalEan,
+                      quantity: isNaN(quantity) ? 1 : Math.round(quantity),
+                      description: product?.description || desc,
+                      found: !!product,
+                      product: product,
+                      price: priceVal || product?.finalPrice || 0,
+                      manufacturer: inferredMfr
+                    });
+                  }
+                  unmatchedBuffer = [];
+                  continue;
+                }
+
                 // A.0 Pedido de Compra / Comercialização product pattern
                 if (isPedidoCompraComercializacao) {
                   const regexPedidoCompraEAN = /^(\d+)\s+(\d{8,14})\s+(.*?)\s+(\d+[\d\.,]*,\d{2})\s+([A-Z]{2})\s+(\d+)\s+(\d+[\d\.,]*,\d{2})\b/;
@@ -2504,50 +2604,123 @@ export default function ImportPanel() {
       dataService.setRegional(selectedRegional);
       
       const reader = new FileReader();
+      reader.onerror = (e) => {
+        console.error('FileReader error:', e);
+        toast.dismiss('catalog-update');
+        toast.dismiss('update-catalog-progress');
+        toast.error('Erro ao ler arquivo da planilha');
+        setLoading(false);
+      };
+
       reader.onload = async (e) => {
         try {
           const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: 'array' });
+          const workbook = XLSX.read(data, { type: 'array', cellDates: true });
           
+          if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+            throw new Error('A planilha enviada não contém nenhuma aba visível.');
+          }
+
           let targetSheetName = workbook.SheetNames[0];
+          
           if (industry === 'DANONE') {
-            // Mais flexível na busca da aba
             const danoneSheet = workbook.SheetNames.find(name => {
               const normalized = name.trim().toUpperCase().replace(/\s/g, '');
-              return normalized.includes('FAT.MIN.1.000,00') || normalized.includes('1.000');
+              return normalized.includes('FAT.MIN.1.000,00') || normalized.includes('1.000') || normalized.includes('DANONE');
             });
-            
             if (danoneSheet) {
               targetSheetName = danoneSheet;
             } else {
               toast.error('Aba "FAT. MIN. 1.000,00" não encontrada. Usando a primeira aba disponível.');
             }
+          } else {
+            // Find sheet matching industry name or common keywords
+            const indUpper = industry.trim().toUpperCase();
+            const matchedSheet = workbook.SheetNames.find(name => {
+              const norm = name.trim().toUpperCase();
+              return norm.includes(indUpper) || norm.includes('PRODUTO') || norm.includes('CATALOGO') || norm.includes('TABELA') || norm.includes('PRECO') || norm.includes('DADOS');
+            });
+            if (matchedSheet) {
+              targetSheetName = matchedSheet;
+            } else if (workbook.SheetNames.length > 1) {
+              // Pick sheet with highest row count
+              let maxCount = -1;
+              for (const sName of workbook.SheetNames) {
+                const sheetObj = workbook.Sheets[sName];
+                if (sheetObj) {
+                  const sheetRows = XLSX.utils.sheet_to_json(sheetObj, { header: 1 }) as any[];
+                  const vRows = sheetRows.filter(r => Array.isArray(r) && r.some(c => c !== null && c !== undefined && String(c).trim() !== ''));
+                  if (vRows.length > maxCount) {
+                    maxCount = vRows.length;
+                    targetSheetName = sName;
+                  }
+                }
+              }
+            }
           }
           
           const targetSheet = workbook.Sheets[targetSheetName];
-          const rows = XLSX.utils.sheet_to_json(targetSheet, { header: 1 });
-          
-          toast.loading(`Atualizando catálogo ${industry} para ${getRegionalLabel(selectedRegional)}...`, { id: 'catalog-update' });
-          const result = await dataService.updateCatalogInSheets(industry, rows, defaultExpiryDate || null);
-          
-          if (result && result.sucesso) {
-            setCatalogUpdateResult(result);
-            toast.success('Catálogo atualizado com sucesso!', { id: 'catalog-update' });
-          } else {
-            // Error is already handled in dataService.ts with a specific toast
-            toast.dismiss('catalog-update');
+          if (!targetSheet) {
+            throw new Error(`Aba "${targetSheetName}" não foi encontrada no arquivo.`);
           }
-        } catch (err) {
+
+          const rawRows = XLSX.utils.sheet_to_json(targetSheet, { header: 1 }) as any[][];
+          
+          // Filter out completely empty rows
+          const validRows = rawRows.filter(row => 
+            Array.isArray(row) && row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '')
+          );
+
+          if (validRows.length === 0) {
+            throw new Error('A planilha selecionada está vazia ou sem dados válidos.');
+          }
+
+          // Sanitize rows to primitives to avoid serialization issues
+          const sanitizedRows = validRows.map(row => 
+            row.map(cell => {
+              if (cell === null || cell === undefined) return '';
+              if (typeof cell === 'object') {
+                if (cell instanceof Date) return cell.toISOString().split('T')[0];
+                return String((cell as any).v ?? (cell as any).w ?? '');
+              }
+              return cell;
+            })
+          );
+
+          toast.loading(`Atualizando catálogo ${industry} para ${getRegionalLabel(selectedRegional)}...`, { id: 'catalog-update' });
+          const result = await dataService.updateCatalogInSheets(industry, sanitizedRows, defaultExpiryDate || null);
+          
+          toast.dismiss('catalog-update');
+          toast.dismiss('update-catalog-progress');
+
+          if (result && (result.sucesso || result.success)) {
+            setCatalogUpdateResult(result);
+            toast.success(`Catálogo ${industry} atualizado com sucesso!`);
+            try {
+              const updatedProducts = await dataService.getAllProducts();
+              setAllProducts(updatedProducts);
+            } catch (pErr) {
+              console.warn('Error refreshing products state after catalog update:', pErr);
+            }
+          }
+        } catch (err: any) {
           console.error('Catalog parse error:', err);
-          toast.error('Erro ao processar planilha de catálogo');
+          toast.dismiss('catalog-update');
+          toast.dismiss('update-catalog-progress');
+          const errorMsg = err?.message || 'Erro ao processar planilha de catálogo';
+          toast.error(errorMsg);
         } finally {
+          toast.dismiss('catalog-update');
+          toast.dismiss('update-catalog-progress');
           setLoading(false);
         }
       };
       reader.readAsArrayBuffer(catalogFile);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Catalog update error:', error);
-      toast.error('Erro ao ler arquivo');
+      toast.dismiss('catalog-update');
+      toast.dismiss('update-catalog-progress');
+      toast.error(`Erro ao iniciar leitura: ${error?.message || error}`);
       setLoading(false);
     }
   };
