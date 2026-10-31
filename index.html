@@ -2,10 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, shrink-to-fit=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, shrink-to-fit=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#000B47" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
     <title>VENDAS HBN1</title>
+    <meta name="description" content="Sistema de gestão de vendas para Higiene &amp; Beleza, com catálogo de produtos, suporte offline, histórico de pedidos e painel administrativo." />
+    <meta property="og:title" content="VENDAS HBN1" />
+    <meta property="og:description" content="Sistema de gestão de vendas para Higiene &amp; Beleza, com catálogo de produtos, suporte offline, histórico de pedidos e painel administrativo." />
     <link rel="icon" type="image/svg+xml" href="/logo.svg" />
     <link rel="apple-touch-icon" href="/logo.svg" />
+    <script>
+      (function() {
+        try {
+          if (window.self === window.top && window.location.hostname.indexOf('-dev-') !== -1) {
+            var publicUrl = window.location.href.replace('-dev-', '-pre-');
+            window.location.replace(publicUrl);
+          }
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

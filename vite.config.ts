@@ -1,6 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import fs from 'fs';
 import {defineConfig, loadEnv} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { viteSingleFile } from 'vite-plugin-singlefile';
@@ -9,10 +10,39 @@ export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   const isGasBuild = process.env.BUILD_GAS === 'true';
 
+  let buildTimestamp = Date.now();
+  const APP_VERSION = '2.5.1';
+  try {
+    const existingVersionPath = path.resolve(__dirname, 'public/version.json');
+    if (fs.existsSync(existingVersionPath)) {
+      const existing = JSON.parse(fs.readFileSync(existingVersionPath, 'utf8'));
+      if (existing.buildTime && mode === 'development') {
+        buildTimestamp = existing.buildTime;
+      }
+    }
+  } catch (_) {}
+
   return {
     plugins: [
       react(), 
       tailwindcss(),
+      {
+        name: 'generate-version-json',
+        buildStart() {
+          try {
+            const v = {
+              version: APP_VERSION,
+              buildTime: buildTimestamp,
+              builtAt: new Date(buildTimestamp).toISOString()
+            };
+            fs.writeFileSync(path.resolve(__dirname, 'public/version.json'), JSON.stringify(v, null, 2));
+            const distDir = path.resolve(__dirname, 'dist');
+            if (fs.existsSync(distDir)) {
+              fs.writeFileSync(path.resolve(distDir, 'version.json'), JSON.stringify(v, null, 2));
+            }
+          } catch (_) {}
+        }
+      },
       ...(isGasBuild ? [
         viteSingleFile(),
         {
@@ -32,7 +62,15 @@ export default defineConfig(({mode}) => {
         VitePWA({
           registerType: 'autoUpdate',
           workbox: {
-            maximumFileSizeToCacheInBytes: 5000000,
+            maximumFileSizeToCacheInBytes: 6000000,
+            cleanupOutdatedCaches: true,
+            navigateFallbackDenylist: [/^\/api/, /^\/version\.json/],
+            runtimeCaching: [
+              {
+                urlPattern: ({ url }) => url.pathname.startsWith('/api') || url.pathname.endsWith('/version.json'),
+                handler: 'NetworkOnly'
+              }
+            ]
           },
           manifest: {
             name: 'VENDAS HBN1',
@@ -67,6 +105,8 @@ export default defineConfig(({mode}) => {
     ],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      '__APP_BUILD_TIME__': JSON.stringify(buildTimestamp),
+      '__APP_VERSION__': JSON.stringify(APP_VERSION),
     },
     resolve: {
       alias: {

@@ -21,11 +21,13 @@ import {
   X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn, formatCurrency } from '../lib/utils';
+import { cn, formatCurrency, parseFlexibleNumber } from '../lib/utils';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import { REGIONALS, getRegionalLabel } from '../constants/regionals';
 import { ClientSchema } from '../lib/schemas';
+import { doc, setDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
 export default function AdminPanel() {
   const { profile } = useAuth();
@@ -1315,9 +1317,10 @@ export default function AdminPanel() {
         var itemEan = String(item[mapping.ean] || "").trim().replace(/[^0-9]/g, '');
         var itemDesc = String(item[mapping.desc] || "").trim();
         var itemStock = String(item[mapping.stock] || "").trim() || "100";
-        var itemPrice = Number(String(item[mapping.price] || 0).replace(',', '.')) || 0;
-        var itemDisc = Number(String(item[mapping.discount] || 0).replace(',', '.')) || 0;
-        var itemFinal = Number(String(item[mapping.final] || 0).replace(',', '.')) || itemPrice;
+        var itemPrice = parseFlexibleNumber(item[mapping.price]);
+        var itemDisc = parseFlexibleNumber(item[mapping.discount]);
+        if (itemDisc > 0 && itemDisc < 1) itemDisc = itemDisc * 100;
+        var itemFinal = parseFlexibleNumber(item[mapping.final]) || itemPrice;
         
         // Smart fallback scan if missing ID/EAN or desc
         if (!itemId || !itemEan) {
@@ -1425,6 +1428,60 @@ export default function AdminPanel() {
                             </button>
                           )}
                         </div>
+                      </div>
+                    </div>
+
+                    {/* Seção: Atualizações do Sistema & Notificação Geral */}
+                    <div className="bg-gradient-to-br from-orange-50 to-amber-50 dark:from-orange-950/20 dark:to-amber-950/20 border border-orange-200 dark:border-orange-800/60 p-5 rounded-2xl space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="inline-block text-[9px] font-black bg-orange-600 text-white px-2 py-0.5 rounded mb-1 uppercase tracking-wider">
+                            Studio IA & Versões
+                          </span>
+                          <h5 className="font-black text-sm text-gray-900 dark:text-white flex items-center gap-1.5">
+                            <Sparkles size={16} className="text-orange-600" />
+                            Transmissão de Atualizações em Tempo Real
+                          </h5>
+                          <p className="text-xs text-gray-600 dark:text-gray-300 mt-0.5 leading-relaxed">
+                            Envie imediatamente o pop-up de atualização para <strong>todos os usuários ativos</strong> e <strong>links de clientes</strong> abertos. Ao clicarem, todos recebem as alterações feitas no Studio IA.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const newTime = Date.now();
+                              await setDoc(doc(db, 'system_settings', 'app_version'), {
+                                version: '2.5.1',
+                                buildTime: newTime,
+                                updatedAt: new Date().toISOString(),
+                                message: 'Atualização publicada pelo Studio IA'
+                              }, { merge: true });
+                              window.dispatchEvent(new CustomEvent('app-update-available', { detail: { buildTime: newTime } }));
+                              toast.success('Notificação de atualização enviada para todos os usuários e clientes com sucesso!');
+                            } catch (err: any) {
+                              toast.error('Erro ao transmitir: ' + err.message);
+                            }
+                          }}
+                          className="flex-1 bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-500 hover:to-amber-500 text-white font-black text-xs py-3 px-4 rounded-xl shadow-md flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.98]"
+                        >
+                          <RefreshCw size={15} />
+                          <span>Transmitir Atualização Geral Agora</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            window.dispatchEvent(new CustomEvent('app-update-available', { detail: { buildTime: Date.now() + 1000 } }));
+                            toast.info('Pop-up de atualização disparado na sua tela!');
+                          }}
+                          className="bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 border border-gray-300 dark:border-gray-700 font-bold text-xs py-3 px-4 rounded-xl cursor-pointer transition-colors"
+                        >
+                          Testar Pop-up Nesta Tela
+                        </button>
                       </div>
                     </div>
                   </div>

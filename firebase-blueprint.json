@@ -143,6 +143,18 @@
     "visits": {
       "schema": "Visit",
       "description": "Seller visit history"
+    },
+    "carts": {
+      "schema": "Order",
+      "description": "Pending active cart items for clients"
+    },
+    "client_photos": {
+      "schema": "Visit",
+      "description": "Uploaded client store photos"
+    },
+    "banners": {
+      "schema": "Visit",
+      "description": "Active promotional banner messages"
     }
   }
 }

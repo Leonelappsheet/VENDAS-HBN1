@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Toaster } from 'sonner';
 import InstallPrompt from './components/InstallPrompt';
+import UpdateNotificationModal from './components/UpdateNotificationModal';
 
 // Lazy load components
 const Login = React.lazy(() => import('./pages/Login'));
@@ -23,13 +24,31 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
+
+  const isCatalogPath = window.location.pathname.startsWith('/catalog');
+  const isSharedLink = window.location.search.includes('ind=') || 
+                       window.location.search.includes('industria=') ||
+                       window.location.search.includes('cart=') || 
+                       window.location.search.includes('shared=') ||
+                       window.location.search.includes('lid=') ||
+                       window.location.search.includes('linkId=') ||
+                       window.location.search.includes('client=') ||
+                       window.location.search.includes('cliente=');
+
+  if (isCatalogPath || isSharedLink) {
+    return <>{children}</>;
+  }
   
-  return profile ? <>{children}</> : <Navigate to="/login" />;
+  const isAuthenticated = profile && !profile.uid.startsWith('guest_');
+  return isAuthenticated ? <>{children}</> : <Navigate to="/login" />;
 }
 
 function ClientSelectionWrapper() {
   const { profile } = useAuth();
-  if (profile?.role === 'cliente') {
+  if (!profile || profile.uid.startsWith('guest_')) {
+    return <Navigate to="/login" replace />;
+  }
+  if (profile.role === 'cliente') {
     return <Navigate to="/catalog" replace />;
   }
   return <ClientSelection />;
@@ -76,6 +95,7 @@ export default function App() {
             </Routes>
           </React.Suspense>
           <InstallPrompt />
+          <UpdateNotificationModal />
         </Router>
         <Toaster position="top-right" richColors />
       </AuthProvider>

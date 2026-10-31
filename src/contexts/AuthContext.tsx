@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { UserProfile, Client } from '../types';
-import { dataService } from '../services/dataService';
+import { dataService, normalizeUserId } from '../services/dataService';
 import { auth } from '../lib/firebase';
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 
@@ -75,9 +75,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const parsed = JSON.parse(localSaved);
             if (parsed) {
               setSelectedClientState(parsed);
-              dataService.saveUserState(profile.uid, parsed).catch(err => {
-                console.error("Error pushing local userState to firestore:", err);
-              });
+              dataService.saveUserState(profile.uid, parsed).catch(() => {});
               setUserStateLoaded(true);
               return;
             }
@@ -127,9 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     try {
       await dataService.saveUserState(profile.uid, client);
-    } catch (err) {
-      console.error('Failed to save user state in Firestore:', err);
-    }
+    } catch (_) {}
   };
 
   useEffect(() => {
@@ -145,54 +141,92 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (savedProfile) {
           try {
             const parsed = JSON.parse(savedProfile);
-            setProfile(parsed);
-            
-            if (parsed.role === 'cliente') {
-              const savedClient = localStorage.getItem('selectedClient');
-              if (savedClient) {
-                try {
-                  setSelectedClientState(JSON.parse(savedClient));
-                } catch (e) {}
+            if (parsed.uid && parsed.uid.startsWith('guest_')) {
+              localStorage.removeItem('VENDAS_profile');
+              savedProfile = null;
+            } else {
+              const canonicalUid = normalizeUserId(parsed.uid);
+              const normalizedProfile = {
+                ...parsed,
+                uid: canonicalUid
+              };
+              setProfile(normalizedProfile);
+              if (parsed.uid !== canonicalUid) {
+                localStorage.setItem('VENDAS_profile', JSON.stringify(normalizedProfile));
               }
-            }
-
-            // Sign in to Firebase Auth anonymously to satisfy firestore rules
-            if (!auth.currentUser) {
-              try {
-                // Use a timeout for anonymous auth so it doesn't block forever
-                const authPromise = signInAnonymously(auth);
-                const timeoutPromise = new Promise((_, reject) => 
-                  setTimeout(() => reject(new Error('Auth Timeout')), 5000)
-                );
-                await Promise.race([authPromise, timeoutPromise]);
-              } catch (authError) {
-                console.warn('Anonymous auth failed or timed out:', authError);
-              }
-            }
-            
-            // Auto-refresh profile in background (only for non-clients)
-            if (parsed.role !== 'cliente') {
-              dataService.getUsersFromSheets().then(users => {
-                const foundUser = users.find(u => u.username.toLowerCase() === parsed.uid.toLowerCase());
-                if (foundUser) {
-                  const updatedProfile = { 
-                    ...parsed, 
-                    phone: foundUser.phone || parsed.phone, 
-                    regional: foundUser.regional || parsed.regional,
-                    role: (foundUser.role === 'admin' ? 'admin' : foundUser.role === 'promotor' ? 'promotor' : 'vendedor')
-                  };
-                  setProfile(updatedProfile);
+              
+              if (parsed.role === 'cliente') {
+                const savedClient = localStorage.getItem('selectedClient');
+                if (savedClient) {
                   try {
-                    localStorage.setItem('VENDAS_profile', JSON.stringify(updatedProfile));
+                    setSelectedClientState(JSON.parse(savedClient));
                   } catch (e) {}
                 }
-              }).catch(() => {});
+              }
+
+              // Sign in to Firebase Auth anonymously to satisfy firestore rules
+              if (!auth.currentUser) {
+                try {
+                  const authPromise = signInAnonymously(auth);
+                  const timeoutPromise = new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Auth Timeout')), 5000)
+                  );
+                  await Promise.race([authPromise, timeoutPromise]);
+                } catch (authError) {
+                  console.warn('Anonymous auth failed or timed out:', authError);
+                }
+              }
+              
+              // Auto-refresh profile in background (only for non-clients)
+              if (parsed.role !== 'cliente') {
+                dataService.getUsersFromSheets().then(users => {
+                  const foundUser = users.find(u => u.username.toLowerCase() === parsed.uid.toLowerCase());
+                  if (foundUser) {
+                    const updatedProfile = { 
+                      ...parsed, 
+                      phone: foundUser.phone || parsed.phone, 
+                      regional: foundUser.regional || parsed.regional,
+                      role: (foundUser.role === 'admin' ? 'admin' : foundUser.role === 'promotor' ? 'promotor' : 'vendedor')
+                    };
+                    setProfile(updatedProfile);
+                    try {
+                      localStorage.setItem('VENDAS_profile', JSON.stringify(updatedProfile));
+                    } catch (e) {}
+                  }
+                }).catch(() => {});
+              }
             }
           } catch (e) {
             console.error('Profile parse error:', e);
             try {
               localStorage.removeItem('VENDAS_profile');
             } catch (remError) {}
+          }
+        }
+        
+        if (!savedProfile) {
+          // If visitor is opening the catalog, shared industry link, or cart
+          const search = window.location.search || '';
+          const pathname = window.location.pathname || '';
+          const isSharedCatalog = search.includes('ind=') || 
+                                 search.includes('cart=') || 
+                                 search.includes('industria=') || 
+                                 search.includes('shared=') || 
+                                 search.includes('lid=') ||
+                                 search.includes('linkId=') ||
+                                 pathname.startsWith('/catalog');
+
+          if (isSharedCatalog) {
+            const guestProfile: UserProfile = {
+              uid: 'guest_' + Math.random().toString(36).substring(2, 9),
+              name: 'Cliente Visitante',
+              role: 'cliente',
+              phone: '',
+              email: '',
+              regional: ''
+            };
+            setProfile(guestProfile);
+            // Do NOT save guestProfile to localStorage so it never intercepts login
           }
         }
       } catch (fatalError) {
@@ -225,7 +259,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         const newProfile: UserProfile = {
-          uid: foundUser.username,
+          uid: normalizeUserId(foundUser.username),
           name: foundUser.name || foundUser.username,
           role: (foundUser.role === 'admin' ? 'admin' : foundUser.role === 'promotor' ? 'promotor' : 'vendedor') as 'admin' | 'vendedor' | 'promotor',
           phone: foundUser.phone || '',

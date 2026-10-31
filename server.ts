@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from 'url';
 import axios from "axios";
 import crypto from "crypto";
@@ -8,6 +9,15 @@ import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 
 dotenv.config();
+
+// Global process-level safety guards to prevent unhandled crashes in container environments
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[CRITICAL SAFETY] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[CRITICAL SAFETY] Uncaught Exception:', err);
+});
 
 let aiClient: GoogleGenAI | null = null;
 
@@ -45,6 +55,15 @@ function handleGeminiError(error: any, res: any) {
 const app = express();
 const apiRouter = express.Router();
 const PORT = 3000;
+
+// Prevent browser/proxy caching for all API responses
+apiRouter.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+  next();
+});
 
 app.use(cors({
   origin: true,
@@ -135,6 +154,17 @@ const isAdmin = (email: string) => {
   return admins.includes(email);
 };
 
+// Template de planilha HBN1 para download
+apiRouter.get("/download-template", (req, res) => {
+  const filePath = path.join(process.cwd(), "public", "templates", "planilha_modelo_hbn1.xlsx");
+  if (fs.existsSync(filePath)) {
+    res.setHeader("Content-Disposition", 'attachment; filename="planilha_modelo_hbn1_distribuicao.xlsx"');
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    return res.sendFile(filePath);
+  }
+  return res.status(404).json({ error: "Arquivo modelo não encontrado." });
+});
+
 // API Routes on apiRouter
 apiRouter.post("/gemini/scan-order", async (req, res) => {
   try {
@@ -158,31 +188,43 @@ apiRouter.post("/gemini/scan-order", async (req, res) => {
 
     console.log(`[Gemini OCR] Escaneando imagem de pedido. MIME: ${mimeType}, Tamanho base64: ${base64Data.length}`);
 
-    const prompt = `Você é um sistema especialista em OCR e extração de dados para pedidos de compra farmacêuticos e de varejo no Brasil.
-Analise a imagem fornecida do pedido de compra (Pedido de Compra / Espelho do Pedido).
+    const prompt = `Você é um sistema especialista, analítico e ultra-criterioso de OCR e extração de dados para relatórios e pedidos de compra farmacêuticos e distribuidoras no Brasil (ex: Nazaria Distribuidora, Drogaria Ferreira, A7 Pharma / Alpha7, Inovafarma, Sta Vitória, etc.).
 
-Extraia todos os pedidos presentes na imagem. Observe que um único documento ou imagem pode conter múltiplos blocos de pedidos para lojas/unidades/filiais diferentes, caracterizadas por diferentes números de CNPJ ou nomes de lojas (ex: "ULTRA POPULAR TERESINA C01 - HIPER FARMA LTDA", "ULTRA POPULAR TERESINA C02").
+Sua missão é analisar o documento/imagem/PDF fornecido e extrair COM TOTAL PRECISÃO E SEM OMITIR NENHUM ITEM E NENHUM CNPJ todos os blocos de pedidos presentes.
 
-Para cada bloco de pedido/cliente separado encontrado na imagem:
-1. Extraia o nome da loja/cliente (clientName - ex: "ULTRA POPULAR TERESINA C01 - HIPER FARMA LTDA").
-2. Extraia o CNPJ (cnpj - apenas números ou formato padrão com pontuação, ex: "29474162004483" ou "29.474.162/0044-83").
-3. Extraia as informações do cabeçalho (headerInfo) se houver:
-   - fornecedor: Nome da indústria ou distribuidor (fornecedor/fabricante, ex: "NAZARIA DIST. PROD. FARMACEUTICOS").
-   - condPgto: Condição de pagamento se houver (ex: "40/50/60 Dias").
-   - status: Status do pedido se houver (ex: "Confirmado" ou "Pendente").
-   - dataEntrega: Data de entrega se houver (ex: "14/07/2026").
-   - cotacao: Número do pedido ou cotação se houver (ex: "1.852.805").
-4. Extraia todos os itens de produto listados nesse bloco de pedido. Para cada item, extraia:
-   - ean: Código de barras / EAN (normalmente de 13 dígitos, mas pode conter de 8 a 14 dígitos, somente números).
-   - quantity: Quantidade pedida (Qtd / Quantidade) como número inteiro (ex: 5 ou 14).
-   - description: Descrição exata do produto como escrita (ex: "LEITE DANONE APTAMIL PREMIUM 1 0-6M 800G").
-   - price: Preço de compra / unitário como número decimal/float (ex: 53.93).
-   - manufacturer: Fabricante do produto se houver (ex: "DANONE" ou "UNILEVER").
+REGRAS OBRIGATÓRIAS E CRITÉRIOS DE EXTRAÇÃO:
+1. MÚLTIPLOS CNPJS / FILIAIS / UNIDADES (SEPARAÇÃO OBRIGATÓRIA):
+   - Um relatório frequentemente possui múltiplos pedidos para LOJAS / FILIAIS DIFERENTES.
+   - Exemplo clássico no cabeçalho: "Filial: 001 07176442/0001-32 DROGARIA FERREIRA - MATRIZ Forma de Pagamento: 70/80/90", "Numero Pedido: 017367".
+   - Cada filial possui seu próprio CNPJ (ex: "07176442/0001-32" -> "07176442000132", "04603682/0001-88", "33724158/0001-63", "40306819/0001-04", "45592059/0001-54", "50338007/0001-96", "07176442/0002-13").
+   - REGRA DE OURO: NUNCA misture itens de CNPJs ou filiais diferentes em um único pedido! Cada CNPJ/filial DEVE ser um objeto separado na lista de resposta.
+   - Se o documento tiver 7 filiais/CNPJs, você DEVE gerar exatamente 7 blocos separados, cada um contendo apenas os itens daquela filial correspondente.
+   - Extraia o CNPJ limpo (14 dígitos numéricos) ou com formato.
+   - Extraia a filial (ex: "001", "002", etc.) e o número do pedido (ex: "017367", "015794").
 
-Certifique-se de escanear todos os blocos e produtos visíveis na imagem. Não omita nenhum item.`;
+2. ITENS E QUANTIDADES (EAN & QTD) - PRECISÃO MATEMÁTICA:
+   - ean: Código de barras EAN (8 a 14 dígitos, ex: "7896007542864", "7896007550890", "7896018700710").
+   - quantity: A QUANTIDADE pedida DEVE SER LIDA EXATAMENTE DA COLUNA 'Qtd' ou 'Qtd.'!
+     * ATENÇÃO COM A COLUNA 'Embalagem' (ex: "1 X 1", "1 X 12", "1 X 6"): Os números "1" dentro da coluna Embalagem NÃO são a quantidade pedida! Ignore os valores de Embalagem.
+     * Exemplo de linha do relatório Nazaria: "7896007542864 ABS INTERNO INTIMUS M KIMBERLY-CLA UN 1 X 1 4" -> Código/EAN: "7896007542864", Descrição: "ABS INTERNO INTIMUS M", Fabricante: "KIMBERLY-CLA", Und: "UN", Embalagem: "1 X 1", QUANTIDADE (quantity): 4! (Note que o preço após a quantidade pode estar vazio ou em branco, coloque price: 0).
+     * Exemplo de linha com fabricante composto: "7896018700710 SH HUGGIES 200ML J R UN 1 X 1 4" -> Código/EAN: "7896018700710", Descrição: "SH HUGGIES 200ML", Fabricante: "J R", QUANTIDADE (quantity): 4!
+     * Exemplo de linha com preço: "7891025120025 APTAMIL ACTIVE 800G DANONE UN 1 X 1 3 121,19" -> QUANTIDADE: 3, Preço: 121.19!
+     * CONFERÊNCIA MATEMÁTICA OBRIGATÓRIA: Em cada bloco do relatório há a linha de rodapé com 'Tot. Itens: [X] Tot. Unidade: [Y]'. A SOMA das quantidades ('quantity') de todos os itens extraídos do bloco DEVE SER RIGOROSAMENTE IGUAL ao valor de 'Tot. Unidade' (ex: 189 unidades na Filial 1, 34 unidades na Filial 2, etc.). Confira a soma antes de responder!
+   - description: Nome/descrição do produto.
+   - price: Preço unitário (se informado; caso esteja em branco, assuma 0).
+   - manufacturer: Fabricante/indústria (ex: "KIMBERLY-CLA", "J R", "DANONE", "UNILEVER", etc.).
+
+3. CABEÇALHO DO PEDIDO (headerInfo):
+   - fornecedor: Nome do fornecedor/distribuidora (ex: "NAZARIA DIST PROD FARMACEUTICOS LTDA").
+   - condPgto: Condição de pagamento se informada (ex: "70/80/90").
+   - status: Status (ex: "Pendente").
+   - dataEntrega: Data de emissão ou entrega (ex: "16/09/2026").
+   - cotacao: Número do Pedido e Filial (ex: "Filial 001 - Pedido #017367").
+
+Seja 100% analítico e criterioso, garanta a separação precisa de cada CNPJ e a extração exata das quantidades de cada filial.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: {
         parts: [
           {
@@ -247,10 +289,204 @@ Certifique-se de escanear todos os blocos e produtos visíveis na imagem. Não o
       return res.status(500).json({ error: "O Gemini não retornou nenhum resultado para a imagem fornecida." });
     }
 
-    const parsedData = JSON.parse(resultText);
+    let parsedData;
+    try {
+      const cleanJson = resultText.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+      parsedData = JSON.parse(cleanJson);
+    } catch (parseErr) {
+      const jsonMatch = resultText.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        parsedData = JSON.parse(jsonMatch[0]);
+      } else {
+        throw parseErr;
+      }
+    }
     res.json(parsedData);
   } catch (error: any) {
     handleGeminiError(error, res);
+  }
+});
+
+apiRouter.options("/proxy-image", (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  return res.sendStatus(204);
+});
+
+apiRouter.get("/proxy-image", async (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+
+  const rawUrl = (req.query.url as string) || "";
+  const ean = (req.query.ean as string) || "";
+  const desc = (req.query.desc as string) || "";
+  const mfg = (req.query.mfg as string) || "";
+
+  const cleanEan = ean.replace(/\D/g, "");
+  const normWords = desc.toLowerCase().replace(/[^a-z0-9]/g, " ").split(/\s+/).filter(w => w.length > 2);
+
+  // Helper to search cached catalog data for alternative working photo
+  const findAlternativePhoto = (): string | null => {
+    for (const cacheItem of Object.values(dataCache)) {
+      const list = cacheItem?.data;
+      if (!Array.isArray(list)) continue;
+
+      // 1. By EAN
+      if (cleanEan && cleanEan.length >= 7) {
+        for (const row of list) {
+          const rowEan = String(row.EAN || row['Código Barras'] || row.ean || '').replace(/\D/g, '');
+          const rowPhoto = String(row.Foto || row.foto || row.Imagem || row.photo || '').trim();
+          if (rowEan === cleanEan && rowPhoto && rowPhoto !== rawUrl && rowPhoto.startsWith('http') && !rowPhoto.includes('sem foto')) {
+            return rowPhoto;
+          }
+        }
+      }
+
+      // 2. By description keyword match
+      if (normWords.length >= 2) {
+        for (const row of list) {
+          const rowPhoto = String(row.Foto || row.foto || row.Imagem || row.photo || '').trim();
+          if (!rowPhoto || rowPhoto === rawUrl || !rowPhoto.startsWith('http') || rowPhoto.includes('sem foto')) {
+            continue;
+          }
+
+          const rowDesc = String(row['Descrição Produto'] || row.Descricao || row.desc || '').toLowerCase().replace(/[^a-z0-9]/g, ' ');
+          const rowWords = rowDesc.split(/\s+/);
+          const matches = normWords.filter(w => rowWords.some(rw => rw === w || (w.length >= 4 && rw.startsWith(w)) || (rw.length >= 4 && w.startsWith(rw))));
+          if (matches.length === normWords.length || (normWords.length >= 4 && matches.length >= normWords.length - 1)) {
+            return rowPhoto;
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  const fetchAndSendImage = async (imgUrl: string): Promise<boolean> => {
+    let target = imgUrl.trim();
+    if (target.startsWith('data:image/')) {
+      const parts = target.split(',');
+      const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/png';
+      const buffer = Buffer.from(parts[1], 'base64');
+      res.setHeader('Content-Type', mime);
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.send(buffer);
+      return true;
+    }
+
+    // Unpack Next.js or Google wrappers
+    if (target.includes('_next/image') || target.includes('/_ipx/')) {
+      const match = target.match(/[?&](?:url|src)=([^&]+)/i);
+      if (match && match[1]) {
+        target = decodeURIComponent(match[1]);
+      }
+    }
+    if (target.includes('google.') && (target.includes('imgres') || target.includes('/url?'))) {
+      const match = target.match(/[?&](?:imgurl|url|q)=(https?%3A%2F%2F[^&]+|https?:\/\/[^&]+)/i);
+      if (match && match[1]) {
+        target = decodeURIComponent(match[1]);
+      }
+    }
+
+    // Salsify Cloudinary-like transformation repair:
+    // Strip /s--...--/c_limit.../ to directly load original high-res asset without 400 Bad Request
+    if (target.includes('images.salsify.com')) {
+      target = target.replace(/\/s--[^\/]+--\/c_limit[^/]+\//, '/');
+      target = target.replace(/\/c_limit[^/]+\//, '/');
+    }
+
+    // Google Drive
+    const driveMatch = target.match(/(?:drive\.google\.com\/file\/d\/|drive\.google\.com\/open\?id=|docs\.google\.com\/uc\?(?:export=download&)?id=)([a-zA-Z0-9_-]+)/);
+    if (driveMatch && driveMatch[1]) {
+      target = `https://lh3.googleusercontent.com/d/${driveMatch[1]}`;
+    }
+
+    // Dropbox
+    if (target.includes('dropbox.com') && !target.includes('dl.dropboxusercontent.com')) {
+      target = target.replace('www.dropbox.com', 'dl.dropboxusercontent.com').replace('?dl=0', '?dl=1');
+    }
+
+    let origin = "https://www.google.com";
+    try {
+      origin = new URL(target.startsWith("http") ? target : `https://${target}`).origin;
+    } catch {}
+
+    try {
+      const response = await axios.get(target, {
+        responseType: "arraybuffer",
+        timeout: 9000,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+          "Referer": `${origin}/`
+        }
+      });
+
+      if (response.status === 200 && response.data && response.data.length > 100) {
+        const contentType = response.headers["content-type"] || "image/jpeg";
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+        res.send(Buffer.from(response.data));
+        return true;
+      }
+    } catch (fetchErr: any) {
+      // Failed to fetch this candidate, return false to trigger next fallback
+      return false;
+    }
+    return false;
+  };
+
+  try {
+    // 1. Try rawUrl first
+    if (rawUrl) {
+      const ok = await fetchAndSendImage(rawUrl);
+      if (ok) return;
+    }
+
+    // 2. Try alternative photo found in catalog for this EAN or product description
+    const altPhoto = findAlternativePhoto();
+    if (altPhoto && altPhoto !== rawUrl) {
+      const ok = await fetchAndSendImage(altPhoto);
+      if (ok) return;
+    }
+
+    // 3. Try Open Food Facts by EAN if available
+    if (cleanEan && cleanEan.length >= 7) {
+      const offUrl = `https://images.openfoodfacts.org/images/products/${cleanEan}/1.jpg`;
+      try {
+        const ok = await fetchAndSendImage(offUrl);
+        if (ok) return;
+      } catch {}
+    }
+
+    // 4. Return SVG fallback badge rather than 502 error so browser/canvas renders gracefully
+    const titleText = (desc || mfg || 'PRODUTO').slice(0, 32).toUpperCase();
+    const subText = (mfg || 'VENDAS HBN1').slice(0, 24).toUpperCase();
+    const cleanEanText = cleanEan ? `EAN: ${cleanEan}` : '';
+
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+      <rect width="400" height="400" fill="#f8fafc"/>
+      <rect x="24" y="24" width="352" height="352" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="3"/>
+      <circle cx="200" cy="150" r="48" fill="#f1f5f9"/>
+      <path d="M184 166 L216 166 L208 140 L198 152 L192 144 Z" fill="#94a3b8"/>
+      <circle cx="214" cy="136" r="6" fill="#cbd5e1"/>
+      <text x="200" y="240" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#1e293b" text-anchor="middle">${titleText}</text>
+      <text x="200" y="268" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12" font-weight="600" fill="#f97316" text-anchor="middle">${subText}</text>
+      ${cleanEanText ? `<text x="200" y="292" font-family="monospace" font-size="10" fill="#94a3b8" text-anchor="middle">${cleanEanText}</text>` : ''}
+    </svg>`;
+
+    res.setHeader("Content-Type", "image/svg+xml");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    return res.send(Buffer.from(svg));
+  } catch (err: any) {
+    console.warn("Proxy image error:", err.message);
+    // Even on catastrophic error, return clean SVG instead of breaking UI
+    const titleText = (desc || 'PRODUTO').slice(0, 30);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300"><rect width="300" height="300" fill="#f8fafc"/><text x="150" y="150" font-family="sans-serif" font-size="12" fill="#94a3b8" text-anchor="middle">${titleText}</text></svg>`;
+    res.setHeader("Content-Type", "image/svg+xml");
+    return res.send(Buffer.from(svg));
   }
 });
 
@@ -268,7 +504,7 @@ apiRouter.post("/gemini/search-image", async (req, res) => {
     Apenas o JSON, nada mais. Formato: ["url1", "url2", ...]`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.5-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -278,7 +514,18 @@ apiRouter.post("/gemini/search-image", async (req, res) => {
 
     const text = response.text;
     if (text) {
-      const urls = JSON.parse(text);
+      let urls: string[] = [];
+      try {
+        const clean = text.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+        urls = JSON.parse(clean);
+      } catch (parseErr) {
+        const jsonMatch = text.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          urls = JSON.parse(jsonMatch[0]);
+        } else {
+          throw parseErr;
+        }
+      }
       res.json(urls);
     } else {
       res.status(500).json({ error: "O Gemini não retornou nenhum resultado." });
@@ -290,108 +537,175 @@ apiRouter.post("/gemini/search-image", async (req, res) => {
 
 apiRouter.post("/product/update-image", async (req, res) => {
   try {
-    const { id, imageUrl, sheetName } = req.body;
+    const { id, imageUrl, sheetName, ean, description } = req.body;
     const spreadsheetId = getRequestSpreadsheetId(req);
     
-    if (!id || !imageUrl || !sheetName) {
-      return res.status(400).json({ error: "Missing required fields (id, imageUrl, sheetName)" });
+    if (!id && !ean && !description) {
+      return res.status(400).json({ error: "Identificador do produto ausente (id, ean ou description)." });
     }
 
+    let cleanUrl = String(imageUrl || "").trim();
+    if (cleanUrl) {
+      cleanUrl = cleanUrl.replace(/^(https?:\/\/)+https?:\/\//i, 'https://');
+      if (cleanUrl.includes('_next/image') || cleanUrl.includes('/_ipx/')) {
+        const match = cleanUrl.match(/[?&](?:url|src)=([^&]+)/i);
+        if (match && match[1]) {
+          cleanUrl = decodeURIComponent(match[1]);
+        }
+      }
+      if (cleanUrl.includes('google.') && (cleanUrl.includes('imgres') || cleanUrl.includes('/url?'))) {
+        const match = cleanUrl.match(/[?&](?:imgurl|url|q)=(https?%3A%2F%2F[^&]+|https?:\/\/[^&]+)/i);
+        if (match && match[1]) {
+          cleanUrl = decodeURIComponent(match[1]);
+        }
+      }
+    }
     const sheets = await getSheetsClient();
-
-    // Retrieve sheet list and perform robust case & accent insensitive mapping
-    let availableSheets: string[] = [];
-    try {
-      const spreadsheet = await sheets.spreadsheets.get({
-        spreadsheetId,
-      });
-      availableSheets = spreadsheet.data.sheets?.map((s: any) => s.properties.title) || [];
-    } catch (err: any) {
-      console.error("Error retrieving spreadsheet in update-image:", err.message);
-      return res.status(500).json({ error: `Erro ao obter abas da planilha: ${err.message}` });
-    }
 
     const normalizeStr = (str: string) => 
       String(str || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
-    const targetSheet = availableSheets.find(s => normalizeStr(s) === normalizeStr(sheetName)) || sheetName;
+    const cleanNum = (s: any) => String(s || "").trim().replace(/\D/g, '').replace(/^0+/, '');
+    const cleanId = String(id || "").trim();
+    const cleanTargetNum = cleanNum(id);
+    const cleanTargetEan = cleanNum(ean);
+    const cleanTargetDesc = normalizeStr(description);
 
-    // 1. Get current data to find the row
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${targetSheet}!A:Z`,
+    // Prepare candidate sheet list prioritizing the one sent from client
+    const candidateSheets: string[] = [];
+    if (sheetName) {
+      candidateSheets.push(sheetName);
+    }
+    ['Produtos', 'Ofertas', 'Lancamentos'].forEach(s => {
+      if (!candidateSheets.some(c => normalizeStr(c) === normalizeStr(s))) {
+        candidateSheets.push(s);
+      }
     });
 
-    const rows = response.data.values || [];
-    if (rows.length === 0) {
-      return res.status(404).json({ error: `Sheet "${targetSheet}" not found or empty.` });
-    }
-
-    const headers = rows[0];
-    const idIdx = headers.findIndex((h: string) => {
-      const normalizedH = String(h).trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-      return ["idproduto", "id", "codigo", "cod"].includes(normalizedH);
-    });
-    
-    const photoIdx = headers.findIndex((h: string) => {
-       const normalizedH = String(h).trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-       return ["foto", "imagem", "url", "photo", "link", "img"].includes(normalizedH) || normalizedH.includes("foto");
-    });
-
-    if (idIdx === -1) {
-      return res.status(500).json({ error: `Coluna ID não encontrada na sheet "${targetSheet}".` });
-    }
-
-    // 2. Find the row index
-    const rowIdx = rows.findIndex((row, idx) => idx > 0 && String(row[idIdx] || "").trim() === String(id).trim());
-
-    if (rowIdx === -1) {
-      return res.status(404).json({ error: `Produto ID "${id}" não encontrado na sheet "${targetSheet}".` });
-    }
-
-    // 3. Update the row
-    let targetPhotoIdx = photoIdx;
-    const getColumnLetter = (index: number) => {
+    const getColumnLetter = (colIndex: number) => {
+      let temp = colIndex;
       let letter = "";
-      while (index >= 0) {
-        letter = String.fromCharCode((index % 26) + 65) + letter;
-        index = Math.floor(index / 26) - 1;
+      while (temp >= 0) {
+        letter = String.fromCharCode((temp % 26) + 65) + letter;
+        temp = Math.floor(temp / 26) - 1;
       }
       return letter;
     };
 
-    if (targetPhotoIdx === -1) {
-      // Photo column doesn't exist, create it at the end
-      targetPhotoIdx = headers.length;
-      const colLetter = getColumnLetter(targetPhotoIdx);
-      
-      // Add "Foto" header
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${targetSheet}!${colLetter}1`,
-        valueInputOption: "RAW",
-        requestBody: {
-          values: [["Foto"]],
-        },
-      });
+    let updatedSheetsCount = 0;
+    const updatedDetails: any[] = [];
+
+    for (const currentSheet of candidateSheets) {
+      try {
+        const response = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: currentSheet,
+        });
+
+        const rows = response.data.values || [];
+        if (rows.length === 0) continue;
+
+        const headers = rows[0];
+        const idIdx = headers.findIndex((h: string) => {
+          const normalizedH = normalizeStr(h);
+          return ["idproduto", "id", "codigo", "cod"].includes(normalizedH) || normalizedH.includes("id");
+        });
+
+        const eanIdx = headers.findIndex((h: string) => {
+          const normalizedH = normalizeStr(h);
+          return ["ean", "barras", "gtin", "codigobarras"].includes(normalizedH) || normalizedH.includes("ean") || normalizedH.includes("barras");
+        });
+
+        const descIdx = headers.findIndex((h: string) => {
+          const normalizedH = normalizeStr(h);
+          return ["descricao", "desc", "nome", "produto"].includes(normalizedH) || normalizedH.includes("desc");
+        });
+
+        const photoIdx = headers.findIndex((h: string) => {
+          const normalizedH = normalizeStr(h);
+          return ["foto", "imagem", "url", "photo", "link", "img"].includes(normalizedH) || normalizedH.includes("foto");
+        });
+
+        // Find all rows matching ID, EAN, or Description
+        const matchingRowIndices: number[] = [];
+        rows.forEach((row: any[], idx: number) => {
+          if (idx === 0) return;
+          const rowId = idIdx !== -1 ? String(row[idIdx] || "").trim() : "";
+          const rowIdNum = cleanNum(rowId);
+
+          if (cleanId && rowId && (rowId === cleanId || (cleanTargetNum && rowIdNum && cleanTargetNum === rowIdNum))) {
+            matchingRowIndices.push(idx);
+            return;
+          }
+
+          if (cleanTargetEan && eanIdx !== -1) {
+            const rowEan = cleanNum(row[eanIdx]);
+            if (rowEan && rowEan === cleanTargetEan) {
+              matchingRowIndices.push(idx);
+              return;
+            }
+          }
+
+          if (cleanTargetDesc && descIdx !== -1 && cleanTargetDesc.length > 5) {
+            const rowDesc = normalizeStr(row[descIdx]);
+            if (rowDesc === cleanTargetDesc) {
+              matchingRowIndices.push(idx);
+              return;
+            }
+          }
+        });
+
+        if (matchingRowIndices.length > 0) {
+          let targetPhotoIdx = photoIdx;
+          if (targetPhotoIdx === -1) {
+            // Photo column doesn't exist, create it at the end of headers
+            targetPhotoIdx = headers.length;
+            const colLetter = getColumnLetter(targetPhotoIdx);
+            
+            await sheets.spreadsheets.values.update({
+              spreadsheetId,
+              range: `${currentSheet}!${colLetter}1`,
+              valueInputOption: "RAW",
+              requestBody: {
+                values: [["Foto"]],
+              },
+            });
+          }
+
+          const colLetter = getColumnLetter(targetPhotoIdx);
+
+          // Update each matching row
+          for (const rowIdx of matchingRowIndices) {
+            const sheetRowNumber = rowIdx + 1;
+            await sheets.spreadsheets.values.update({
+              spreadsheetId,
+              range: `${currentSheet}!${colLetter}${sheetRowNumber}`,
+              valueInputOption: "RAW",
+              requestBody: {
+                values: [[cleanUrl]],
+              },
+            });
+            updatedDetails.push({ sheet: currentSheet, row: sheetRowNumber });
+          }
+          updatedSheetsCount++;
+        }
+      } catch (sheetErr: any) {
+        console.warn(`[update-image] Aba "${currentSheet}" não acessível ou com erro:`, sheetErr.message);
+      }
     }
 
-    const sheetRowNumber = rowIdx + 1;
-    const colLetter = getColumnLetter(targetPhotoIdx);
-    
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `${targetSheet}!${colLetter}${sheetRowNumber}`,
-      valueInputOption: "RAW",
-      requestBody: {
-        values: [[imageUrl]],
-      },
+    // Invalidate data caches for this spreadsheet so UI gets immediate fresh data
+    Object.keys(dataCache).forEach(k => {
+      if (k.startsWith(spreadsheetId)) {
+        delete dataCache[k];
+      }
     });
 
-    res.json({ success: true });
+    console.log(`[update-image] Imagem atualizada para o produto ${id || ean || description} em ${updatedDetails.length} linha(s) das abas.`);
+    res.json({ success: true, updatedCount: updatedDetails.length, details: updatedDetails });
   } catch (error: any) {
     console.error("Error updating image in Sheets:", error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message || String(error) });
   }
 });
 
@@ -514,6 +828,28 @@ async function getSheetsClient() {
     timeout: 30000,
   });
 
+  // Automatic retry with exponential backoff for rate-limiting (429) and transient errors (500/502/503/504)
+  axiosInstance.interceptors.response.use(
+    (response) => response,
+    async (error) => {
+      const config = error.config;
+      if (!config) return Promise.reject(error);
+
+      const status = error.response?.status;
+      const shouldRetry = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+      const retryCount = config.__retryCount || 0;
+
+      if (shouldRetry && retryCount < 4) {
+        config.__retryCount = retryCount + 1;
+        const delay = Math.pow(2, config.__retryCount) * 1000 + Math.floor(Math.random() * 500);
+        console.warn(`[Google Sheets API] Status ${status} detectado. Tentando novamente em ${delay}ms (Tentativa ${config.__retryCount}/4)...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return axiosInstance(config);
+      }
+      return Promise.reject(error);
+    }
+  );
+
   sheetsClient = {
     spreadsheets: {
       get: async ({ spreadsheetId }: { spreadsheetId: string }) => {
@@ -571,10 +907,33 @@ function cleanSpreadsheetId(id: string) {
   return extractedId;
 }
 
-// API Routes Metadata
+// API Routes Metadata & Sheet Names Cache
 let cachedSpreadsheetInfo: Record<string, any> = {};
 let cachedMetadataFetchTime: Record<string, number> = {};
-const METADATA_CACHE_DURATION = 60000; // 1 minute
+const METADATA_CACHE_DURATION = 300000; // 5 minutes cache for spreadsheet metadata
+
+async function getSpreadsheetSheetNames(sheets: any, spreadsheetId: string): Promise<string[]> {
+  const now = Date.now();
+  if (cachedSpreadsheetInfo[spreadsheetId]?.sheets && (now - (cachedMetadataFetchTime[spreadsheetId] || 0) < METADATA_CACHE_DURATION)) {
+    return cachedSpreadsheetInfo[spreadsheetId].sheets;
+  }
+  try {
+    const response = await sheets.spreadsheets.get({ spreadsheetId });
+    const sheetTitles = response.data.sheets?.map((s: any) => s.properties.title) || [];
+    cachedSpreadsheetInfo[spreadsheetId] = {
+      ...(cachedSpreadsheetInfo[spreadsheetId] || {}),
+      title: response.data.properties?.title,
+      sheets: sheetTitles,
+    };
+    cachedMetadataFetchTime[spreadsheetId] = now;
+    return sheetTitles;
+  } catch (err: any) {
+    if (cachedSpreadsheetInfo[spreadsheetId]?.sheets?.length > 0) {
+      return cachedSpreadsheetInfo[spreadsheetId].sheets;
+    }
+    throw err;
+  }
+}
 
 apiRouter.get("/status", async (req, res) => {
   const spreadsheetId = getRequestSpreadsheetId(req);
@@ -623,32 +982,23 @@ apiRouter.get("/status", async (req, res) => {
     }
 
     const serviceAccountEmail = credentials?.client_email || "";
-    const now = Date.now();
     let isApiKey = spreadsheetId.startsWith("AIza");
     let spreadsheetError = null;
 
-    if (!cachedSpreadsheetInfo[spreadsheetId] || (now - (cachedMetadataFetchTime[spreadsheetId] || 0) > METADATA_CACHE_DURATION)) {
-      try {
-        const sheets = await getSheetsClient();
-        const response = await sheets.spreadsheets.get({
-          spreadsheetId,
-        });
-        
-        const sheetTitles = response.data.sheets?.map((s: any) => s.properties.title) || [];
-        
-        cachedSpreadsheetInfo[spreadsheetId] = {
-          title: response.data.properties?.title,
-          sheets: sheetTitles,
-          headers: {} // Headers fetched on demand now to save quota
-        };
-        cachedMetadataFetchTime[spreadsheetId] = now;
-      } catch (err: any) {
-        spreadsheetError = err.message;
-        if (err.code === 404 && isApiKey) {
-          spreadsheetError = `ERRO CRÍTICO: O ID "${spreadsheetId}" não foi encontrado. Este valor parece ser uma CHAVE DE API (começa com 'AIza'). Você deve usar o ID da Planilha que fica na URL do navegador. Exemplo: 1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs`;
-        } else if (err.code === 404) {
-          spreadsheetError = `Planilha não encontrada (ID: ${spreadsheetId}). Verifique se o ID está correto e se você compartilhou a planilha com o e-mail: ${serviceAccountEmail}`;
-        }
+    try {
+      const sheets = await getSheetsClient();
+      const sheetTitles = await getSpreadsheetSheetNames(sheets, spreadsheetId);
+      cachedSpreadsheetInfo[spreadsheetId] = {
+        title: cachedSpreadsheetInfo[spreadsheetId]?.title,
+        sheets: sheetTitles,
+        headers: {}
+      };
+    } catch (err: any) {
+      spreadsheetError = err.message;
+      if (err.code === 404 && isApiKey) {
+        spreadsheetError = `ERRO CRÍTICO: O ID "${spreadsheetId}" não foi encontrado. Este valor parece ser uma CHAVE DE API (começa com 'AIza'). Você deve usar o ID da Planilha que fica na URL do navegador. Exemplo: 1X-c-rFaYMtGvHs2inspKlU2AYoTt5p-wB0Gr-AutAjs`;
+      } else if (err.code === 404) {
+        spreadsheetError = `Planilha não encontrada (ID: ${spreadsheetId}). Verifique se o ID está correto e se você compartilhou a planilha com o e-mail: ${serviceAccountEmail}`;
       }
     }
 
@@ -672,7 +1022,19 @@ apiRouter.get("/status", async (req, res) => {
 });
 
 const dataCache: Record<string, { data: any, timestamp: number }> = {};
-const DATA_CACHE_DURATION = 30000; // 30 seconds
+const DATA_CACHE_DURATION = 10000; // 10 seconds cache to prevent Google API rate limits & fast responses
+
+export function invalidateSheetCache(spreadsheetId: string, sheetName?: string) {
+  if (sheetName) {
+    delete dataCache[`${spreadsheetId}_${sheetName}`];
+  } else {
+    Object.keys(dataCache).forEach(k => {
+      if (k.startsWith(`${spreadsheetId}_`)) {
+        delete dataCache[k];
+      }
+    });
+  }
+}
 
 apiRouter.get("/data/:sheetName", async (req, res) => {
   try {
@@ -683,99 +1045,64 @@ apiRouter.get("/data/:sheetName", async (req, res) => {
     const cacheKey = `${spreadsheetId}_${sheetName}`;
 
     // Check cache
-    if (dataCache[cacheKey] && (fetchNow - dataCache[cacheKey].timestamp < DATA_CACHE_DURATION)) {
+    if (req.query.nocache !== '1' && dataCache[cacheKey] && (fetchNow - dataCache[cacheKey].timestamp < DATA_CACHE_DURATION)) {
       return res.json(dataCache[cacheKey].data);
     }
 
     const sheets = await getSheetsClient();
     
-    console.log(`Fetching sheet: ${sheetName} from spreadsheet: ${spreadsheetId}`);
+    let rows: any[][] | null = null;
 
-    // First, verify the spreadsheet exists and get available sheet names
-    let availableSheets: string[] = [];
+    // Fast path: fetch directly by range name to save metadata quota
     try {
-      const spreadsheet = await sheets.spreadsheets.get({
+      const response = await sheets.spreadsheets.values.get({
         spreadsheetId,
+        range: sheetName,
       });
-      availableSheets = spreadsheet.data.sheets?.map((s: any) => s.properties.title) || [];
+      rows = response.data.values || [];
     } catch (err: any) {
-      console.error("Error verifying spreadsheet:", err.message);
-      if (err.code === 404) {
+      // If direct fetch fails (case difference, etc.), resolve tab name from cached metadata
+      console.warn(`Direct fetch for sheet "${sheetName}" failed, resolving sheet name:`, err.message);
+      let availableSheets: string[] = [];
+      try {
+        availableSheets = await getSpreadsheetSheetNames(sheets, spreadsheetId);
+      } catch (metaErr: any) {
+        if (err.code === 404) {
+          return res.status(404).json({
+            error: `Spreadsheet ID "${spreadsheetId}" not found.`,
+            details: "Check your GOOGLE_SHEET_ID secret. Ensure the ID is correct and the Service Account has access."
+          });
+        }
+        throw err;
+      }
+
+      const targetSheet = availableSheets.find(s => s.trim().toLowerCase() === sheetName.trim().toLowerCase());
+      if (!targetSheet) {
         return res.status(404).json({
-          error: `Spreadsheet ID "${spreadsheetId}" not found.`,
-          details: "Check your GOOGLE_SHEET_ID secret. Ensure the ID is correct and the Service Account has access."
+          error: `Sheet "${sheetName}" not found in spreadsheet.`,
+          availableSheets,
+          details: `Available tabs are: ${availableSheets.join(", ")}. Please ensure your Google Sheet has a tab named exactly "${sheetName}".`
         });
       }
-      throw err;
-    }
 
-    // Try to find the sheet with a case-insensitive match or trimmed match
-    let targetSheet = availableSheets.find(s => s.trim().toLowerCase() === sheetName.trim().toLowerCase());
-    
-    if (!targetSheet) {
-      return res.status(404).json({
-        error: `Sheet "${sheetName}" not found in spreadsheet.`,
-        availableSheets,
-        details: `Available tabs are: ${availableSheets.join(", ")}. Please ensure your Google Sheet has a tab named exactly "${sheetName}".`
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: targetSheet,
       });
+      rows = response.data.values || [];
     }
 
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${targetSheet}!A:Z`,
-    });
-
-    const rows = response.data.values;
     if (!rows || rows.length === 0) {
       const emptyData: any[] = [];
-      dataCache[sheetName] = { data: emptyData, timestamp: fetchNow };
+      dataCache[cacheKey] = { data: emptyData, timestamp: fetchNow };
       return res.json(emptyData);
     }
 
-    const headers = rows[0];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    // Identify discount related columns dynamically on the backend too
-    const keysNormalized = headers.map((k: any) => String(k || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
-    const priceIdx = keysNormalized.findIndex((k: string) => ["pv", "preco venda", "preco", "valor"].includes(k));
-    const finalIdx = keysNormalized.findIndex((k: string) => ["pf", "preco final", "valor final"].includes(k));
-    const discIdx = keysNormalized.findIndex((k: string) => ["desconto", "percentual"].includes(k));
-    const validIdx = keysNormalized.findIndex((k: string) => ["validade", "expira", "vencimento"].includes(k));
-
+    const headers = (rows[0] || []).map((h: any) => String(h || '').trim());
     const data = rows.slice(1).map((row: any) => {
       const obj: any = {};
       headers.forEach((header: string, index: number) => {
-        let val = row[index];
-        
-        // Backend Expiration logic: if we found the relevant columns, check them
-        if (index === discIdx || index === finalIdx) {
-          const validDateStr = row[validIdx];
-          if (validDateStr) {
-            try {
-              let parsedDate: Date | null = null;
-              if (typeof validDateStr === 'number') {
-                parsedDate = new Date((validDateStr - 25569) * 86400 * 1000);
-              } else if (String(validDateStr).includes('/')) {
-                const parts = String(validDateStr).split('/');
-                if (parts.length === 3) parsedDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
-              } else {
-                parsedDate = new Date(validDateStr);
-              }
-
-              if (parsedDate && !isNaN(parsedDate.getTime())) {
-                parsedDate.setHours(0, 0, 0, 0);
-                if (today > parsedDate) {
-                  // Expired!
-                  if (index === discIdx) val = "0.00%";
-                  if (index === finalIdx) val = row[priceIdx];
-                }
-              }
-            } catch (e) {}
-          }
-        }
-
-        obj[header] = val;
+        obj[header] = row[index];
       });
       return obj;
     });
@@ -842,8 +1169,15 @@ apiRouter.post("/order", async (req, res) => {
     }
 
     const cartId = `CARRINHO_${order.clientId}`;
+    const rawClientId = String(order.clientId || "").trim().toLowerCase();
+    const cleanClientId = rawClientId.replace(/\D/g, '');
+
     const nonCartRows = rows.slice(1).filter((row: any[]) => {
-      return String(row[1] || "").trim() !== cartId;
+      const rowCartId = String(row[1] || "").trim().toLowerCase();
+      if (rowCartId === `carrinho_${rawClientId}`) return false;
+      if (rawClientId && rowCartId.includes(rawClientId)) return false;
+      if (cleanClientId.length >= 6 && rowCartId.includes(cleanClientId)) return false;
+      return true;
     });
 
     // Finalized order items
@@ -875,6 +1209,9 @@ apiRouter.post("/order", async (req, res) => {
         values: finalRows,
       },
     });
+
+    invalidateSheetCache(spreadsheetId, 'Pedidos');
+    invalidateSheetCache(spreadsheetId, 'ItensPedido');
 
     res.json({ sucesso: true, idPedido: order.id });
   } catch (error: any) {
@@ -908,10 +1245,16 @@ apiRouter.post("/cart/save", async (req, res) => {
     }
 
     const cartId = `CARRINHO_${clientId}`;
+    const rawClientId = String(clientId || "").trim().toLowerCase();
+    const cleanClientId = rawClientId.replace(/\D/g, '');
 
     // Filter out previous cart rows for this client
     const nonCartRows = rows.slice(1).filter((row: any[]) => {
-      return String(row[1] || "").trim() !== cartId;
+      const rowCartId = String(row[1] || "").trim().toLowerCase();
+      if (rowCartId === `carrinho_${rawClientId}`) return false;
+      if (rawClientId && rowCartId.includes(rawClientId)) return false;
+      if (cleanClientId.length >= 6 && rowCartId.includes(cleanClientId)) return false;
+      return true;
     });
 
     // Create new cart rows
@@ -1017,7 +1360,13 @@ apiRouter.post("/cart/save", async (req, res) => {
         }
 
         const nonClientCarrinhoRows = carrinhosRows.slice(1).filter((row: any[]) => {
-          return String(row[0] || "").trim() !== String(clientId).trim();
+          const rowId = String(row[0] || "").trim().toLowerCase();
+          const rowClientName = String(row[1] || "").trim().toLowerCase();
+          if (rowId === rawClientId) return false;
+          if (rawClientId && rowId.includes(rawClientId)) return false;
+          if (cleanClientId.length >= 6 && (rowId.includes(cleanClientId) || rowId.replace(/\D/g, '').includes(cleanClientId))) return false;
+          if (rawClientId.length >= 4 && rowClientName.includes(rawClientId)) return false;
+          return true;
         });
 
         const total = (items || []).reduce((acc: number, item: any) => {
@@ -1073,6 +1422,9 @@ apiRouter.post("/cart/save", async (req, res) => {
     } catch (carrinhoErr) {
       console.error("Error managing Carrinhos overview sheet:", carrinhoErr);
     }
+
+    invalidateSheetCache(spreadsheetId, 'ItensPedido');
+    invalidateSheetCache(spreadsheetId, 'Carrinhos');
 
     res.json({ sucesso: true });
   } catch (error: any) {
@@ -1166,7 +1518,7 @@ apiRouter.post("/catalog/update", async (req, res) => {
       try {
         const response = await sheets.spreadsheets.values.get({
           spreadsheetId,
-          range: `${sheetName}!A:Z`,
+          range: sheetName,
         });
         
         const allRows = response.data.values || [];
@@ -1235,33 +1587,50 @@ apiRouter.post("/catalog/update", async (req, res) => {
       String(h || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     );
 
-    const getSourceIndex = (names: string[]) => {
+    const getSourceIndex = (names: string[], excludeSubstrings: string[] = []) => {
       const normalizedNames = names.map(n => n.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+      const normalizedExcludes = excludeSubstrings.map(x => x.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+      
+      const isExcluded = (h: string) => normalizedExcludes.some(ex => h.includes(ex));
+
+      // Pass 1: Exact equality
       for (const name of normalizedNames) {
-        const idx = headerNormalized.indexOf(name);
+        const idx = headerNormalized.findIndex(h => h === name && !isExcluded(h));
         if (idx !== -1) return idx;
       }
+      
+      // Pass 2: Exact word boundary match or prefix match with space
       for (const name of normalizedNames) {
         if (name.length < 3) continue;
-        const idx = headerNormalized.findIndex(h => h.startsWith(name));
+        const idx = headerNormalized.findIndex(h => (h === name || h.startsWith(name + " ") || h.endsWith(" " + name)) && !isExcluded(h));
         if (idx !== -1) return idx;
       }
+
+      // Pass 3: General startsWith
+      for (const name of normalizedNames) {
+        if (name.length < 3) continue;
+        const idx = headerNormalized.findIndex(h => h.startsWith(name) && !isExcluded(h));
+        if (idx !== -1) return idx;
+      }
+
+      // Pass 4: Includes
       for (const name of normalizedNames) {
         if (name.length < 4) continue;
-        const idx = headerNormalized.findIndex(h => h.includes(name));
+        const idx = headerNormalized.findIndex(h => h.includes(name) && !isExcluded(h));
         if (idx !== -1) return idx;
       }
+
       return -1;
     };
 
     const mappedIndices = {
-      id: getSourceIndex(["IDProduto", "ID_Produto", "Codigo", "Cod", "Código", "CÓD", "CODIGO", "ID"]),
+      id: getSourceIndex(["IDProduto", "ID_Produto", "Codigo", "Cod", "Código", "CÓD", "CODIGO", "ID"], ["ean", "desc"]),
       ean: getSourceIndex(["EAN", "Codigo Barras", "Código de Barras", "EAN13", "GTIN", "BARRAS"]),
-      desc: getSourceIndex(["Descrição", "Descricao", "Nome", "Produto", "Descricao Produto", "PRODUTO", "NOME"]),
+      desc: getSourceIndex(["Descrição", "Descricao", "Nome", "Produto", "Descricao Produto", "PRODUTO", "NOME"], ["desc tot", "%desc", "desconto", "validade"]),
       stock: getSourceIndex(["Estoque", "Sald", "Saldo", "QTDE", "Qtde", "Quant", "Quantidade", "STOCK", "DISPONIVEL", "QTD DISP", "ESTOQ", "ESTOQUE", "UNIDADES", "UNID"]),
-      price: getSourceIndex(["PV", "Preço Venda", "Preco Venda", "PRECO", "PREÇO", "VALOR", "TABELA", "UNITARIO", "UNITÁRIO", "PREÇO UNITARIO", "VALOR UNITARIO"]),
-      discount: getSourceIndex(["DESC", "Desconto", "DESCONTO", "PERCENTUAL", "BONUS", "%DESC", "DESC TOTAL"]),
-      final: getSourceIndex(["PREÇO C/ DESC", "PRECO C/ DESC", "PRECO C DESC", "PF", "Preço Final", "Preco Final", "VALOR FINAL", "PRECO LIQUIDO", "PRECO LÍQUIDO", "VALOR LIQUIDO", "LIQUIDO"]),
+      price: getSourceIndex(["PREÇO FABRIC", "PRECO FABRIC", "PREÇO FABRICA", "PRECO FABRICA", "PREÇO TABELA", "PRECO TABELA", "PREÇO VENDA", "PRECO VENDA", "PV", "PREÇO", "PRECO", "VALOR", "TABELA", "UNITARIO", "UNITÁRIO", "PREÇO UNITARIO", "VALOR UNITARIO"], ["desc", "fin", "liquido", "c/ desc"]),
+      discount: getSourceIndex(["%DESC TOT", "% DESC TOT", "DESC TOT", "DESCONTO TOT", "DESCONTO TOTAL", "%DESC", "% DESC", "%DESCONTO", "% DESCONTO", "PERC DESCONTO", "DESCONTO %", "DESC TOTAL", "DESC. TOT.", "DESCONTO", "PERCENTUAL", "BONUS", "DESC"], ["descricao", "description", "nome", "produto", "marca", "fabricante", "validade"]),
+      final: getSourceIndex(["PREÇO FIN", "PRECO FIN", "PREÇO FINAL", "PRECO FINAL", "PREÇO C/ DESC", "PRECO C/ DESC", "PRECO C DESC", "PF", "Preço Final", "Preco Final", "VALOR FINAL", "PRECO LIQUIDO", "PRECO LÍQUIDO", "VALOR LIQUIDO", "LIQUIDO"]),
       valid: getSourceIndex(["VALOR VALIDADE", "VALIDADE", "VENCIMENTO", "DATA FIM", "EXPIRA", "VALIDADE DESCONTO"])
     };
 
@@ -1371,59 +1740,66 @@ apiRouter.post("/catalog/update", async (req, res) => {
     log.push(`Varredura concluída: Limpos valores de [Estoque, Preco Venda, Desconto, Preco Final] de ${clearedCountTotal} linhas de produto da indústria ${targetIndustry} antes da atualização.`);
 
     const applyCustomRounding = (val: number): number => {
-      if (isNaN(val)) return 0;
-      const s = val.toFixed(10);
-      const parts = s.split('.');
-      let rounded: number;
-      if (parts.length >= 2 && parts[1].length >= 3) {
-        const thirdDigit = parseInt(parts[1][2]);
-        if (thirdDigit >= 6) {
-          rounded = parseFloat((Math.ceil(val * 100) / 100).toFixed(2));
-        } else {
-          rounded = parseFloat((Math.floor(val * 100) / 100).toFixed(2));
-        }
-      } else {
-        rounded = parseFloat(val.toFixed(2));
-      }
-
-      // Special case requested: 0.99% -> 1.00%
+      if (isNaN(val) || !isFinite(val)) return 0;
+      const rounded = Math.round((val + Number.EPSILON) * 100) / 100;
       if (rounded === 0.99) return 1.00;
       return rounded;
     };
 
     const cleanNumericString = (val: any): string => {
       if (val === null || val === undefined) return "0";
-      if (typeof val === 'number') return String(val);
+      if (typeof val === 'number') return isNaN(val) ? "0" : String(val);
       
-      let s = String(val).replace('R$', '').replace('%', '').trim();
+      let s = String(val).trim();
       if (!s) return "0";
 
-      // Pattern: 1.234,56 -> 1234.56
-      if (s.includes('.') && s.includes(',')) {
-        return s.replace(/\./g, '').replace(',', '.');
-      }
-      
-      // Pattern: 87,38 -> 87.38
-      if (s.includes(',')) {
-        return s.replace(',', '.');
+      // Remove currency signs (R$, $, €, BRL), %, quotes, spaces, non-breaking spaces
+      s = s.replace(/R\$/gi, '')
+           .replace(/\$/g, '')
+           .replace(/€/g, '')
+           .replace(/BRL/gi, '')
+           .replace(/%/g, '')
+           .replace(/["']/g, '')
+           .replace(/\u00A0/g, ' ')
+           .trim();
+
+      if (!s) return "0";
+
+      const hasComma = s.includes(',');
+      const hasDot = s.includes('.');
+
+      if (hasComma && hasDot) {
+        const lastComma = s.lastIndexOf(',');
+        const lastDot = s.lastIndexOf('.');
+        if (lastComma > lastDot) {
+          // e.g. 1.234,56 (BR format)
+          s = s.replace(/\./g, '').replace(',', '.');
+        } else {
+          // e.g. 1,234.56 (US format)
+          s = s.replace(/,/g, '');
+        }
+      } else if (hasComma) {
+        // Only comma present. In Portuguese / BRL, comma is ALWAYS the decimal separator.
+        s = s.replace(/\s+/g, '').replace(',', '.');
+      } else if (hasDot) {
+        // Only dot present.
+        const dotCount = (s.match(/\./g) || []).length;
+        if (dotCount > 1) {
+          // e.g. 1.234.567 (multiple dots)
+          s = s.replace(/\./g, '');
+        }
+        // Single dot is standard decimal format
       }
 
-      // Pattern: 87.38 -> 87.38 (Keep as decimal)
-      const dotCount = (s.match(/\./g) || []).length;
-      if (dotCount === 1) {
-        return s;
-      }
-      
-      // Pattern: 1.234.567 -> 1234567
-      if (dotCount > 1) {
-        return s.replace(/\./g, '');
-      }
-      
-      return s;
+      // Keep digits, minus sign, and dot
+      s = s.replace(/[^\d.-]/g, '');
+
+      return s || "0";
     };
 
     const formatBrazilian = (num: any, isPercent = false) => {
-      const val = parseFloat(String(num).replace(',', '.'));
+      const cleaned = cleanNumericString(num);
+      const val = parseFloat(cleaned);
       if (isNaN(val)) return num;
       // Use dot as decimal separator for spreadsheet storage as requested
       const s = val.toFixed(2);
@@ -1461,6 +1837,11 @@ apiRouter.post("/catalog/update", async (req, res) => {
           let fVal = parseFloat(cleanNumericString(newFinal));
           let dVal = parseFloat(cleanNumericString(newDiscount));
 
+          // Normalize percentage if read as decimal e.g. 0.10 -> 10, 0.02 -> 2
+          if (dVal > 0 && dVal < 1) {
+            dVal = Math.round((dVal * 100 + Number.EPSILON) * 100) / 100;
+          }
+
           // HEURISTIC: If pVal looks like it's missing decimal (e.g. 8738 instead of 87.38)
           if (isKimberlyInput) {
             if (pVal > 1000 && pVal % 1 === 0) pVal /= 100;
@@ -1471,30 +1852,26 @@ apiRouter.post("/catalog/update", async (req, res) => {
             if (dVal === 1) dVal = 10;
           }
 
-          if (dVal > 1 && pVal > 1 && dVal < pVal && dVal > (pVal * 0.45) && !isKimberlyInput) {
-            fVal = dVal;
-            dVal = 0;
+          if (dVal > 0 && !isNaN(dVal)) {
+            // Keep explicit discount
           }
 
           if (!isNaN(pVal) && pVal > 0) {
             newPrice = applyCustomRounding(pVal);
             
-            // Priority 1: Use Final Price to calculate discount if it looks reliable
-            // If Final price is significantly less than price, use it.
-            // But if it's too small (like 90% discount) and it's Kimberly, maybe trust dVal more
-            const looksLikeTooMuchDiscount = isKimberlyInput && fVal > 0 && ((pVal - fVal) / pVal) > 0.4;
-            
-            if (!isNaN(fVal) && fVal > 0 && Math.abs(fVal - pVal) > 0.01 && !looksLikeTooMuchDiscount) {
+            // Priority 1: If explicit discount column is present and > 0, trust the discount column!
+            if (!isNaN(dVal) && dVal > 0) {
+              newDiscount = applyCustomRounding(dVal);
+              newFinal = (!isNaN(fVal) && fVal > 0 && Math.abs(fVal - pVal) > 0.01)
+                ? applyCustomRounding(fVal)
+                : applyCustomRounding(pVal * (1 - newDiscount / 100));
+            }
+            // Priority 2: Use Final Price to calculate discount if explicit discount is not provided
+            else if (!isNaN(fVal) && fVal > 0 && Math.abs(fVal - pVal) > 0.01) {
               newFinal = applyCustomRounding(fVal);
               const calculatedDisc = ((pVal - fVal) / pVal) * 100;
               newDiscount = calculatedDisc > 0 ? applyCustomRounding(calculatedDisc) : 0;
             } 
-            // Priority 2: Use provided Discount
-            else if (!isNaN(dVal) && dVal > 0) {
-              const dPerc = dVal < 1 ? dVal * 100 : dVal;
-              newDiscount = applyCustomRounding(dPerc);
-              newFinal = applyCustomRounding(pVal * (1 - newDiscount / 100));
-            }
             // Fallback: No discount
             else {
               newFinal = newPrice;
@@ -1515,6 +1892,10 @@ apiRouter.post("/catalog/update", async (req, res) => {
           let fValRaw = parseFloat(cleanNumericString(item[mapping.final]));
           let dValRaw = parseFloat(cleanNumericString(item[mapping.discount]));
 
+          if (dValRaw > 0 && dValRaw < 1) {
+            dValRaw = Math.round((dValRaw * 100 + Number.EPSILON) * 100) / 100;
+          }
+
           if (isKimberlyInput) {
             if (pValRaw > 1000 && pValRaw % 1 === 0) pValRaw /= 100;
             if (fValRaw > 1000 && fValRaw % 1 === 0) fValRaw /= 100;
@@ -1523,16 +1904,16 @@ apiRouter.post("/catalog/update", async (req, res) => {
 
           if (!isNaN(pValRaw) && pValRaw > 0) {
             newPrice = applyCustomRounding(pValRaw);
-            const looksTooMuch = isKimberlyInput && fValRaw > 0 && ((pValRaw - fValRaw) / pValRaw) > 0.4;
             
-            if (!isNaN(fValRaw) && fValRaw > 0 && Math.abs(fValRaw - pValRaw) > 0.01 && !looksTooMuch) {
+            if (!isNaN(dValRaw) && dValRaw > 0) {
+              newDiscount = applyCustomRounding(dValRaw);
+              newFinal = (!isNaN(fValRaw) && fValRaw > 0 && Math.abs(fValRaw - pValRaw) > 0.01)
+                ? applyCustomRounding(fValRaw)
+                : applyCustomRounding(pValRaw * (1 - newDiscount / 100));
+            } else if (!isNaN(fValRaw) && fValRaw > 0 && Math.abs(fValRaw - pValRaw) > 0.01) {
               newFinal = applyCustomRounding(fValRaw);
               const calculated = ((pValRaw - fValRaw) / pValRaw) * 100;
               newDiscount = calculated > 0 ? applyCustomRounding(calculated) : 0;
-            } else if (!isNaN(dValRaw) && dValRaw > 0) {
-              const dPerc = dValRaw < 1 ? dValRaw * 100 : dValRaw;
-              newDiscount = applyCustomRounding(dPerc);
-              newFinal = applyCustomRounding(pValRaw * (1 - newDiscount / 100));
             } else {
               newFinal = newPrice;
               newDiscount = 0;
@@ -1647,13 +2028,13 @@ apiRouter.post("/catalog/update", async (req, res) => {
             if (isStockNotFound || !newStock || newStock === "") {
               finalStock = "1";
             }
-            if (isPriceNotFound || !newPrice || parseFloat(String(newPrice)) <= 0 || isNaN(parseFloat(String(newPrice)))) {
+            if (isPriceNotFound || !newPrice || parseFloat(cleanNumericString(newPrice)) <= 0 || isNaN(parseFloat(cleanNumericString(newPrice)))) {
               finalPriceVal = 1;
             }
-            if (isDiscountNotFound || !newDiscount || parseFloat(String(newDiscount)) <= 0 || isNaN(parseFloat(String(newDiscount)))) {
+            if (isDiscountNotFound || !newDiscount || parseFloat(cleanNumericString(newDiscount)) <= 0 || isNaN(parseFloat(cleanNumericString(newDiscount)))) {
               finalDiscountVal = 1;
             }
-            if (isFinalNotFound || !newFinal || parseFloat(String(newFinal)) <= 0 || isNaN(parseFloat(String(newFinal)))) {
+            if (isFinalNotFound || !newFinal || parseFloat(cleanNumericString(newFinal)) <= 0 || isNaN(parseFloat(cleanNumericString(newFinal)))) {
               finalPriceFinalVal = 1;
             }
           }
@@ -1923,7 +2304,7 @@ apiRouter.post("/catalog/update", async (req, res) => {
 
       await sheets.spreadsheets.values.clear({
         spreadsheetId,
-        range: `${sheetName}!A:Z`,
+        range: sheetName,
       });
 
       await sheets.spreadsheets.values.update({
@@ -1935,6 +2316,8 @@ apiRouter.post("/catalog/update", async (req, res) => {
         },
       });
     }));
+
+    invalidateSheetCache(spreadsheetId);
 
     res.json({ 
       sucesso: true, 
@@ -1959,7 +2342,7 @@ apiRouter.post("/client/update", async (req, res) => {
     // 1. Get current clients to find the row index
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: "Clientes!A:Z",
+      range: "Clientes",
     });
 
     const rows = response.data.values || [];
@@ -2016,6 +2399,8 @@ apiRouter.post("/client/update", async (req, res) => {
       },
     });
 
+    invalidateSheetCache(spreadsheetId, 'Clientes');
+
     res.json({ sucesso: true, client: client });
   } catch (error: any) {
     console.error("Error updating client in Sheets:", error);
@@ -2027,9 +2412,90 @@ apiRouter.post("/client/update", async (req, res) => {
 const apiPath = process.env.NETLIFY ? "/.netlify/functions/api" : "/api";
 app.use([apiPath, "/api"], apiRouter);
 
+// Timestamp of current server startup
+const SERVER_START_TIME = Date.now();
+
+// Version endpoint for auto-update notifications
+apiRouter.get("/version", (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  let distBuildTime = 0;
+  let version = "2.5.1";
+  try {
+    const pubPath = path.join(process.cwd(), 'public', 'version.json');
+    if (fs.existsSync(pubPath)) {
+      const pubData = JSON.parse(fs.readFileSync(pubPath, 'utf8'));
+      if (pubData.buildTime) {
+        distBuildTime = pubData.buildTime;
+      }
+      if (pubData.version) version = pubData.version;
+    }
+  } catch (_) {}
+
+  try {
+    const vPath = path.join(process.cwd(), 'dist', 'version.json');
+    if (fs.existsSync(vPath)) {
+      const vData = JSON.parse(fs.readFileSync(vPath, 'utf8'));
+      if (vData.buildTime && vData.buildTime > distBuildTime) {
+        distBuildTime = vData.buildTime;
+      }
+      if (vData.version) version = vData.version;
+    }
+  } catch (_) {}
+
+  const effectiveBuildTime = distBuildTime > 0 ? distBuildTime : SERVER_START_TIME;
+
+  res.json({
+    version,
+    buildTime: effectiveBuildTime,
+    buildHash: `hbn1_${effectiveBuildTime}`,
+    serverStartTime: SERVER_START_TIME,
+    timestamp: Date.now()
+  });
+});
+
+// Direct route for /version.json
+app.get("/version.json", (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Content-Type', 'application/json');
+
+  let distBuildTime = 0;
+  let version = "2.5.1";
+  try {
+    const pubPath = path.join(process.cwd(), 'public', 'version.json');
+    if (fs.existsSync(pubPath)) {
+      const pubData = JSON.parse(fs.readFileSync(pubPath, 'utf8'));
+      distBuildTime = pubData.buildTime || 0;
+      if (pubData.version) version = pubData.version;
+    }
+  } catch (_) {}
+
+  try {
+    const vPath = path.join(process.cwd(), 'dist', 'version.json');
+    if (fs.existsSync(vPath)) {
+      const vData = JSON.parse(fs.readFileSync(vPath, 'utf8'));
+      if (vData.buildTime && vData.buildTime > distBuildTime) {
+        distBuildTime = vData.buildTime;
+      }
+      if (vData.version) version = vData.version;
+    }
+  } catch (_) {}
+
+  const effectiveBuildTime = distBuildTime > 0 ? distBuildTime : SERVER_START_TIME;
+  res.json({
+    version,
+    buildTime: effectiveBuildTime,
+    builtAt: new Date(effectiveBuildTime).toISOString()
+  });
+});
+
 // Fallback for API routes that might be called without expected prefix in various environments
 app.use((req, res, next) => {
-  if (req.path.startsWith('/data/') || req.path.startsWith('/catalog/') || req.path === '/status' || req.path === '/health') {
+  if (req.path.startsWith('/data/') || req.path.startsWith('/catalog/') || req.path === '/status' || req.path === '/health' || req.path === '/version') {
     return apiRouter(req, res, next);
   }
   next();
@@ -2054,6 +2520,19 @@ apiRouter.all("*", (req, res) => {
   res.status(404).json({ error: "Route not found in API router", path: req.path });
 });
 
+// Global Express error handler middleware
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error(`[EXPRESS GLOBAL ERROR] ${req.method} ${req.url}:`, err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  const status = typeof err.status === 'number' ? err.status : (typeof err.statusCode === 'number' ? err.statusCode : 500);
+  res.status(status).json({
+    error: err.message || "Erro interno no servidor",
+    path: req.path
+  });
+});
+
 // Vite middleware setup
 export async function startServer() {
   const isServerless = !!(process.env.NETLIFY || process.env.VERCEL);
@@ -2061,11 +2540,8 @@ export async function startServer() {
 
   if (!isProd && !isServerless) {
     try {
-      // Completely hide vite from static analysis using string concatenation
-      const v = "vi";
-      const t = "te";
-      const viteModule = await import(v + t);
-      const vite = await viteModule.createServer({
+      const { createServer } = await import("vite");
+      const vite = await createServer({
         server: { middlewareMode: true },
         appType: "spa",
       });
@@ -2076,17 +2552,40 @@ export async function startServer() {
     }
   } else if (!isServerless) {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    
+    // Prevent browser and proxy caching of HTML and version files
+    app.use((req, res, next) => {
+      if (req.method === 'GET' && (req.path === '/' || req.path.endsWith('.html') || !path.extname(req.path) || req.path.endsWith('version.json'))) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        res.setHeader('Surrogate-Control', 'no-store');
+      }
+      next();
+    });
+
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html') || filePath.endsWith('version.json') || filePath.endsWith('sw.js')) {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+        }
+      }
+    }));
+
     app.get('*', (req, res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
   // Only listen on a port if NOT in a serverless environment
   if (!isServerless) {
-    const port = Number(process.env.PORT) || PORT;
-    app.listen(port, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${port}`);
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${PORT}`);
     });
   }
 }

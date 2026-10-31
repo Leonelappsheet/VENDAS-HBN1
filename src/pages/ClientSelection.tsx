@@ -18,6 +18,7 @@ export default function ClientSelection() {
   const [clients, setClients] = useState<Client[]>([]);
   const [sheetCarts, setSheetCarts] = useState<any[]>([]);
   const [firestoreCarts, setFirestoreCarts] = useState<any[]>([]);
+  const [firestoreCartsLoaded, setFirestoreCartsLoaded] = useState(false);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('VENDAS_dark') === '1');
@@ -30,7 +31,7 @@ export default function ClientSelection() {
   const [showPasswords, setShowPasswords] = useState({ current: false, new: false, confirm: false });
 
   useEffect(() => {
-    if (profile?.role === 'promotor') {
+    if (profile?.role === 'promotor' || profile?.role === 'cliente' || !profile) {
       navigate('/catalog');
     }
   }, [profile, navigate]);
@@ -61,6 +62,7 @@ export default function ClientSelection() {
 
     const unsubFirestoreCarts = dataService.subscribeAllCarts(profile.uid, (carts) => {
       setFirestoreCarts(carts || []);
+      setFirestoreCartsLoaded(true);
     });
 
     const unsubscribe = dataService.subscribeClients(
@@ -256,37 +258,51 @@ export default function ClientSelection() {
           <div className="grid gap-3">
             <AnimatePresence mode="popLayout">
                 {filteredClients.map((client, index) => {
-                  const cartForClientSheet = sheetCarts?.find(cart => {
-                    if (!cart) return false;
-                    
-                    const cartIdStr = cart.id ? String(cart.id).trim().toLowerCase() : '';
-                    const clientIdStr = client.id ? String(client.id).trim().toLowerCase() : '';
-                    if (cartIdStr && clientIdStr && cartIdStr === clientIdStr) {
-                      return true;
-                    }
-                    
-                    if (cart.clientName) {
-                      const cartNameStr = String(cart.clientName).trim().toLowerCase();
-                      const clientNameStr = client.name ? String(client.name).trim().toLowerCase() : '';
-                      const clientTradeStr = client.tradeName ? String(client.tradeName).trim().toLowerCase() : '';
-                      
-                      if (clientNameStr && cartNameStr === clientNameStr) return true;
-                      if (clientTradeStr && cartNameStr === clientTradeStr) return true;
-                    }
-                    
-                    return false;
-                  });
-
                   const cartForClientFirestore = firestoreCarts?.find(cart => {
                     if (!cart || !cart.clientId) return false;
                     const cartClientIdStr = String(cart.clientId).trim().toLowerCase();
                     const clientIdStr = client.id ? String(client.id).trim().toLowerCase() : '';
-                    return cartClientIdStr && clientIdStr && cartClientIdStr === clientIdStr;
+                    const clientCnpjStr = client.cnpj ? String(client.cnpj).trim().toLowerCase() : '';
+                    const clientCleanCnpj = clientCnpjStr.replace(/\D/g, '');
+                    return (clientIdStr && cartClientIdStr === clientIdStr) ||
+                           (clientCnpjStr && cartClientIdStr === clientCnpjStr) ||
+                           (clientCleanCnpj.length >= 6 && cartClientIdStr === clientCleanCnpj);
                   });
-                  const sheetItemCount = Number(cartForClientSheet?.itemsCount) || 0;
-                  const firestoreItemCount = Number(cartForClientFirestore?.items?.length) || 0;
-                  const itemCount = sheetItemCount + firestoreItemCount;
+
+                  // Check localStorage for instant client-side fallback
+                  const cleanCnpj = client.cnpj ? client.cnpj.replace(/\D/g, '') : '';
+                  const localCartRaw = localStorage.getItem(`cart_${client.id}`) ||
+                                       (client.cnpj ? localStorage.getItem(`cart_${client.cnpj}`) : null) ||
+                                       (cleanCnpj ? localStorage.getItem(`cart_${cleanCnpj}`) : null);
+                  let localItemCount = 0;
+                  if (localCartRaw) {
+                    try {
+                      const parsed = JSON.parse(localCartRaw);
+                      if (Array.isArray(parsed)) {
+                        localItemCount = parsed.reduce((sum: number, item: any) => sum + (Number(item.quantity) || 1), 0);
+                      }
+                    } catch (e) {}
+                  }
+
+                  const firestoreItemCount = cartForClientFirestore?.items && Array.isArray(cartForClientFirestore.items)
+                    ? cartForClientFirestore.items.reduce((sum: number, item: any) => sum + (Number(item.quantity) || 1), 0)
+                    : 0;
+
+                  // Real-time item count: once Firestore carts are loaded from the cloud, it is the sole authority across all devices (Dev and Pre).
+                  // If Firestore has no cart for this client, the count is 0.
+                  const itemCount = firestoreCartsLoaded 
+                    ? firestoreItemCount 
+                    : (cartForClientFirestore !== undefined ? firestoreItemCount : localItemCount);
                   const hasCart = itemCount > 0;
+
+                  // Auto-clean stale localStorage on device if Firestore confirmed the cart is empty
+                  if (firestoreCartsLoaded && firestoreItemCount === 0 && localItemCount > 0) {
+                    try {
+                      if (client.id) localStorage.setItem(`cart_${client.id}`, '[]');
+                      if (client.cnpj) localStorage.setItem(`cart_${client.cnpj}`, '[]');
+                      if (cleanCnpj) localStorage.setItem(`cart_${cleanCnpj}`, '[]');
+                    } catch (_) {}
+                  }
 
                   return (
                     <motion.div

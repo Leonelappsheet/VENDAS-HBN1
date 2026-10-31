@@ -25,7 +25,7 @@ import {
   Minus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { cn, formatCurrency, normalizeEAN } from '../lib/utils';
+import { cn, formatCurrency, normalizeEAN, parseFlexibleNumber } from '../lib/utils';
 import * as XLSX from 'xlsx';
 import XLSXStyle from 'xlsx-js-style';
 import { toast } from 'sonner';
@@ -33,7 +33,73 @@ import * as pdfjs from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import ExcelJS from 'exceljs';
+import { preloadProductThumbnails } from '../utils/imageExportHelper';
+import { findBestMatchingClient, formatCNPJ } from '../utils/clientMatcher';
+import { findBestMatchingProduct } from '../utils/productMatcher';
 import { REGIONALS, getRegionalLabel, RegionalKey } from '../constants/regionals';
+
+function enhanceResultsWithSuggestions(resultsList: any[], catalogProducts: any[]): any[] {
+  if (!resultsList || resultsList.length === 0 || !catalogProducts || catalogProducts.length === 0) {
+    return resultsList;
+  }
+
+  return resultsList.map(res => {
+    const updatedItems = (res.items || []).map((item: any) => {
+      // If already matched with a product or explicitly confirmed, keep
+      if (item.found && item.product) {
+        return item;
+      }
+      if (item.isConfirmed && item.product) {
+        return item;
+      }
+
+      // Try fuzzy matching by description and EAN digits
+      const searchString = `${item.description || ''} ${item.ean || ''}`;
+      const best = findBestMatchingProduct(searchString, catalogProducts);
+
+      if (best.product) {
+        // Exact EAN match found embedded in description string -> auto-confirm
+        if (best.score === 100) {
+          return {
+            ...item,
+            found: true,
+            product: best.product,
+            ean: best.product.ean || item.ean,
+            description: best.product.description || item.description,
+            price: item.price || best.product.finalPrice || 0,
+            suggestedProduct: undefined,
+            matchScore: 100,
+            isConfirmed: true
+          };
+        }
+
+        // Return with suggested product for user confirmation
+        return {
+          ...item,
+          found: false,
+          suggestedProduct: best.product,
+          matchScore: best.score,
+          isSuggested: true
+        };
+      }
+
+      return item;
+    });
+
+    return {
+      ...res,
+      items: updatedItems
+    };
+  });
+}
+import { 
+  drawPDFHeader, 
+  drawClientDataCard, 
+  drawBottomSummaryCards, 
+  drawObservationsBox, 
+  drawPDFFooterStrip 
+} from '../utils/pdfTemplate';
 
 function inferManufacturer(desc: string): string | null {
   const d = desc.toUpperCase();
@@ -81,6 +147,100 @@ export default function ImportPanel() {
   const [selectedRegional, setSelectedRegional] = useState<string>('TIMON-MA');
   const [isProcessing, setIsProcessing] = useState(false);
 
+  // Export Filter State ('all' | 'noStock' | 'notFound' | 'unavailable')
+  const [selectedExportFilter, setSelectedExportFilter] = useState<'all' | 'noStock' | 'notFound' | 'unavailable'>('all');
+  const [activeOrderExportMenu, setActiveOrderExportMenu] = useState<number | null>(null);
+
+  // Substitution & Description Matching State
+  const [replacingItem, setReplacingItem] = useState<{ clientIdx: number; itemIdx: number; item: any } | null>(null);
+  const [replacementSearch, setReplacementSearch] = useState<string>('');
+
+  useEffect(() => {
+    if (replacingItem?.item) {
+      setReplacementSearch(replacingItem.item.description || replacingItem.item.ean || '');
+    } else {
+      setReplacementSearch('');
+    }
+  }, [replacingItem]);
+
+  const filteredReplacementProducts = useMemo(() => {
+    if (!replacingItem || !allProducts || allProducts.length === 0) return [];
+    
+    if (!replacementSearch.trim()) {
+      if (replacingItem.item?.description) {
+        const best = findBestMatchingProduct(replacingItem.item.description, allProducts);
+        if (best.product) {
+          const rest = allProducts.filter(p => p.id !== best.product.id).slice(0, 15);
+          return [best.product, ...rest];
+        }
+      }
+      return allProducts.slice(0, 15);
+    }
+
+    const query = replacementSearch.toLowerCase().trim();
+    return allProducts.filter(p => 
+      p.description?.toLowerCase().includes(query) ||
+      normalizeEAN(p.ean).includes(query) ||
+      String(p.id).toLowerCase().includes(query) ||
+      p.industry?.toLowerCase().includes(query)
+    ).slice(0, 30);
+  }, [replacementSearch, allProducts, replacingItem]);
+
+  const handleConfirmSuggestion = (clientIdx: number, itemIdx: number) => {
+    setResults(prev => {
+      const updated = [...prev];
+      const item = { ...updated[clientIdx].items[itemIdx] };
+      if (item.suggestedProduct) {
+        item.product = item.suggestedProduct;
+        item.found = true;
+        item.isConfirmed = true;
+        item.ean = item.suggestedProduct.ean || item.ean;
+        item.description = item.suggestedProduct.description || item.description;
+        item.price = item.suggestedProduct.finalPrice || item.price;
+        item.suggestedProduct = undefined;
+        updated[clientIdx].items[itemIdx] = item;
+
+        setCheckedItems(cPrev => new Set(cPrev).add(`${clientIdx}-${itemIdx}`));
+        toast.success(`Produto "${item.product.description}" confirmado!`);
+      }
+      return updated;
+    });
+  };
+
+  const handleReplaceProduct = (clientIdx: number, itemIdx: number, newProduct: any) => {
+    setResults(prev => {
+      const updated = [...prev];
+      const item = { ...updated[clientIdx].items[itemIdx] };
+      item.product = newProduct;
+      item.found = true;
+      item.isConfirmed = true;
+      item.isReplaced = true;
+      item.ean = newProduct.ean || item.ean;
+      item.description = newProduct.description || item.description;
+      item.price = newProduct.finalPrice || item.price;
+      item.suggestedProduct = undefined;
+      updated[clientIdx].items[itemIdx] = item;
+
+      setCheckedItems(cPrev => new Set(cPrev).add(`${clientIdx}-${itemIdx}`));
+      toast.success(`Produto substituído por "${newProduct.description}"!`);
+      return updated;
+    });
+    setReplacingItem(null);
+  };
+
+  const handleRejectSuggestion = (clientIdx: number, itemIdx: number) => {
+    setResults(prev => {
+      const updated = [...prev];
+      const item = { ...updated[clientIdx].items[itemIdx] };
+      item.suggestedProduct = undefined;
+      item.isSuggested = false;
+      item.found = false;
+      updated[clientIdx].items[itemIdx] = item;
+      toast.info('Sugestão rejeitada.');
+      return updated;
+    });
+  };
+
   const splitResultsByManufacturer = useCallback((resultsList: any[]): any[] => {
     const finalSplit: any[] = [];
     resultsList.forEach(res => {
@@ -96,13 +256,17 @@ export default function ImportPanel() {
 
       // Create a separate result block for each manufacturer
       Object.entries(groups).forEach(([manufacturer, mItems]) => {
+        const baseCotacao = res.orderNumber ? `Pedido #${res.orderNumber}` : (res.headerInfo?.cotacao || 'IMPORTAÇÃO');
         finalSplit.push({
           ...res,
+          orderNumber: res.orderNumber,
+          numeroPedido: res.numeroPedido,
+          filial: res.filial,
           headerInfo: {
             status: 'Pendente',
-            cotacao: 'IMPORTAÇÃO',
             dataEntrega: new Date().toLocaleDateString('pt-BR'),
             ...(res.headerInfo || {}),
+            cotacao: baseCotacao,
             fornecedor: manufacturer
           },
           items: mItems
@@ -296,7 +460,12 @@ export default function ImportPanel() {
       setIsProcessing(true);
       const cartKey = `cart_${client.id}`;
       const saved = localStorage.getItem(cartKey);
-      let cartItems: any[] = saved ? JSON.parse(saved) : [];
+      let cartItems: any[] = [];
+      try {
+        cartItems = saved ? JSON.parse(saved) : [];
+      } catch (e) {
+        cartItems = [];
+      }
 
       selectedItems.forEach((item: any) => {
         const existing = cartItems.find(i => i.id === item.product.id);
@@ -332,8 +501,12 @@ export default function ImportPanel() {
   };
 
   const selectedClient = useMemo(() => {
-    const saved = localStorage.getItem('selectedClient');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem('selectedClient');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
   }, []);
 
   useEffect(() => {
@@ -347,6 +520,7 @@ export default function ImportPanel() {
       setAllProducts(products);
       setAllClients(clients);
       setLoading(false);
+      setResults(prev => enhanceResultsWithSuggestions(prev, products));
     }).catch(err => {
       console.error('Error fetching data for regional:', err);
       setLoading(false);
@@ -497,6 +671,26 @@ export default function ImportPanel() {
               const pageText = pageObj.text;
               const pageLines = pageText.split('\n');
               let lastFilialNum = '';
+              let pageNumeroPedido = '';
+              let pageDtEmissao = '';
+              let pageFornecedor = '';
+
+              // Pre-scan page text for order-level headers so they are immediately available
+              const numPedMatch = pageText.match(/(?:N[úu]mero\s*(?:do\s*)?Pedido|N[º°\.]*\s*Pedido|Numero\s*Pedido|Pedido\s*N[º°\.]*|Ordem\s*de\s*Compra)\s*[:#]?\s*([0-9A-Za-z\-_]+)/i);
+              if (numPedMatch) pageNumeroPedido = numPedMatch[1].trim();
+
+              const dtMatch = pageText.match(/Dt\.\s*Emiss[ãa]o\s*Pedido:\s*([0-9\/]+)/i);
+              if (dtMatch) pageDtEmissao = dtMatch[1].trim();
+
+              const dtEntregaMatch = pageText.match(/Dt\.\s*Entrega:\s*([0-9\/]+)/i);
+              const pageDtEntrega = dtEntregaMatch ? dtEntregaMatch[1].trim() : '';
+
+              const formaPgtoMatch = pageText.match(/Forma\s*(?:de\s*)?pagamento:\s*([^\s\n]+)/i);
+              const pageCondPgto = formaPgtoMatch ? formaPgtoMatch[1].trim() : '';
+
+              const fornMatch = pageText.match(/Fornecedor\s*:\s*(?:\d+\s+)?(.*?)(?=\s*(?:Numero|Dt\.|\n|$))/i);
+              if (fornMatch && fornMatch[1].trim()) pageFornecedor = fornMatch[1].trim();
+
               const isPedidoCompraComercializacao = pageText.toLowerCase().includes("compra mercadoria para comercializacao") || 
                                                    (pageText.toLowerCase().includes("pedido de compra") && pageText.toLowerCase().includes("insc. federal (cnpj)"));
               
@@ -504,6 +698,28 @@ export default function ImportPanel() {
                 const line = pageLines[lineIdx];
                 const trimmedLine = line.trim();
                 if (!trimmedLine) continue;
+
+                // Capture document-level / page-level headers if present inline
+                const lineNumPedMatch = trimmedLine.match(/(?:N[úu]mero\s*(?:do\s*)?Pedido|N[º°\.]*\s*Pedido|Numero\s*Pedido|Pedido\s*N[º°\.]*|Ordem\s*de\s*Compra)\s*[:#]?\s*([0-9A-Za-z\-_]+)/i);
+                if (lineNumPedMatch) {
+                  const inlineNum = lineNumPedMatch[1].trim();
+                  if (inlineNum) {
+                    pageNumeroPedido = inlineNum;
+                    if (currentClientObj && !currentClientObj.orderNumber) {
+                      currentClientObj.orderNumber = inlineNum;
+                      currentClientObj.numeroPedido = inlineNum;
+                      if (!currentClientObj.headerInfo.cotacao || currentClientObj.headerInfo.cotacao === 'IMPORTAÇÃO') {
+                        currentClientObj.headerInfo.cotacao = `Pedido #${inlineNum}`;
+                      }
+                    }
+                  }
+                }
+
+                const lineDtMatch = trimmedLine.match(/Dt\.\s*Emiss[ãa]o\s*Pedido:\s*([0-9\/]+)/i);
+                if (lineDtMatch && !pageDtEmissao) pageDtEmissao = lineDtMatch[1].trim();
+
+                const lineFornMatch = trimmedLine.match(/Fornecedor\s*:\s*(?:\d+\s+)?(.*?)(?:Numero|$)/i);
+                if (lineFornMatch && lineFornMatch[1].trim() && !pageFornecedor) pageFornecedor = lineFornMatch[1].trim();
 
                 // A.0.0 Sta Vitoria / Nazaria Store block header (e.g. "Loja: 01 - STA VITORIA 01 - CNPJ: 23917429000143")
                 const lojaHeaderMatch = trimmedLine.match(/^Loja:\s*(\d+)\s*[-–—]?\s*(.*?)(?:\s*[-–—]?\s*CNPJ:\s*([\d\.\/\-]+))?$/i);
@@ -529,11 +745,7 @@ export default function ImportPanel() {
                   importResults.push(currentClientObj);
                   unmatchedBuffer = [];
 
-                  const matchedClient = allClients.find(c => {
-                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
-                    if (cnpj && dbCnpj === cnpj) return true;
-                    return c.name.toLowerCase().includes(storeName.toLowerCase()) || storeName.toLowerCase().includes(c.name.toLowerCase());
-                  });
+                  const matchedClient = findBestMatchingClient(cnpj, storeName, allClients);
                   if (matchedClient) {
                     currentClientObj.client = matchedClient;
                     currentClientObj.clientName = matchedClient.name;
@@ -647,21 +859,23 @@ export default function ImportPanel() {
                   // 1. Identify client block headers
                 // A. Nazaria Filial header & CNPJ / Client Name extraction (handles same-line or separate-line layouts)
                 const filialOnlyMatch = trimmedLine.match(/Filial:\s*(\d+)/i);
-                const nazariaCnpjMatch = trimmedLine.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})\s+([^\n]+)/);
+                const nazariaCnpjMatch = trimmedLine.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}|\d{8}\/\d{4}-\d{2}|\d{14})/);
 
                 if (filialOnlyMatch) {
                   lastFilialNum = filialOnlyMatch[1];
-                  if (!nazariaCnpjMatch) {
-                    continue;
-                  }
                 }
 
-                if (nazariaCnpjMatch) {
-                  const cnpjRaw = nazariaCnpjMatch[1];
-                  const nameRaw = nazariaCnpjMatch[2];
-                  const cnpj = cnpjRaw.replace(/[^\d]/g, '');
+                if (nazariaCnpjMatch && (filialOnlyMatch || lastFilialNum || trimmedLine.toLowerCase().includes('filial'))) {
+                  const rawCnpj = nazariaCnpjMatch[1];
+                  const cnpj = rawCnpj.replace(/[^\d]/g, '');
+                  const activeFilial = filialOnlyMatch ? filialOnlyMatch[1] : (lastFilialNum || '');
+
+                  const cnpjIdx = trimmedLine.indexOf(rawCnpj);
+                  let name = trimmedLine.substring(cnpjIdx + rawCnpj.length).trim();
                   
-                  let name = nameRaw;
+                  const formaPgtoMatch = trimmedLine.match(/Forma\s*de\s*Pagamento:\s*([^\s\n]+)/i);
+                  const condPgto = formaPgtoMatch ? formaPgtoMatch[1].trim() : '';
+
                   const truncateKeywords = [
                     'Forma de Pagamento', 'Bairro', 'Endereço', 'Endereco', 
                     'Cep', 'Cidade', 'UF', 'Numero Pedido', 'Dt. Emissão', 'Dt. Emissao'
@@ -673,33 +887,57 @@ export default function ImportPanel() {
                     }
                   });
                   name = name.replace(/[\s\-–—]+$/, '').trim();
-                  
-                  const activeFilial = lastFilialNum || '';
-                  currentClientObj = {
-                    clientName: name,
-                    cnpj: cnpj,
-                    items: [],
-                    headerInfo: {
-                      fornecedor: 'NAZARIA DISTRIBUIDORA',
-                      condPgto: '',
-                      status: 'Pendente',
-                      dataEntrega: '',
-                      cotacao: activeFilial ? `Filial ${activeFilial}` : 'IMPORTAÇÃO'
+
+                  // Check if this EXACT order already exists in results (e.g. multi-page order of the same order number)
+                  const existingClientObj = importResults.find(r => {
+                    if (r.cnpj !== cnpj) return false;
+                    // If order numbers are present, compare them
+                    if (pageNumeroPedido && r.orderNumber) {
+                      return r.orderNumber === pageNumeroPedido;
                     }
-                  };
-                  importResults.push(currentClientObj);
-                  unmatchedBuffer = [];
-                  
-                  // Try to find the exact client in allClients database
-                  const matchedClient = allClients.find(c => {
-                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
-                    if (cnpj && dbCnpj === cnpj) return true;
-                    return c.name.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(c.name.toLowerCase());
+                    if (pageNumeroPedido && !r.orderNumber) {
+                      return false;
+                    }
+                    if (activeFilial && r.filial && activeFilial !== r.filial) {
+                      return false;
+                    }
+                    return !pageNumeroPedido && !r.orderNumber;
                   });
-                  if (matchedClient) {
-                    currentClientObj.client = matchedClient;
-                    currentClientObj.clientName = matchedClient.name;
+
+                  if (existingClientObj) {
+                    currentClientObj = existingClientObj;
+                    if (condPgto && !currentClientObj.headerInfo.condPgto) {
+                      currentClientObj.headerInfo.condPgto = condPgto;
+                    }
+                    if (pageDtEntrega && !currentClientObj.headerInfo.dataEntrega) {
+                      currentClientObj.headerInfo.dataEntrega = pageDtEntrega;
+                    }
+                  } else {
+                    currentClientObj = {
+                      orderNumber: pageNumeroPedido,
+                      numeroPedido: pageNumeroPedido,
+                      clientName: name,
+                      cnpj: cnpj,
+                      filial: activeFilial,
+                      items: [],
+                      headerInfo: {
+                        fornecedor: pageFornecedor || 'NAZARIA DISTRIBUIDORA',
+                        condPgto: condPgto || pageCondPgto || '',
+                        status: 'Pendente',
+                        dataEntrega: pageDtEntrega || pageDtEmissao || '',
+                        cotacao: pageNumeroPedido ? `Pedido #${pageNumeroPedido}` : (activeFilial ? `Filial ${activeFilial}` : 'IMPORTAÇÃO')
+                      }
+                    };
+                    importResults.push(currentClientObj);
+
+                    // Try to find the exact client in allClients database
+                    const matchedClient = findBestMatchingClient(cnpj, name, allClients);
+                    if (matchedClient) {
+                      currentClientObj.client = matchedClient;
+                      currentClientObj.clientName = matchedClient.name;
+                    }
                   }
+                  unmatchedBuffer = [];
                   continue;
                 }
 
@@ -709,6 +947,20 @@ export default function ImportPanel() {
                 // C. A7 Pharma Unidade header
                 const unidadeMatch = trimmedLine.toLowerCase().includes('tot. unidade') ? null : trimmedLine.match(/Unidade:\s*(.*?)(?=\s*CNPJ:|$)/i);
                 
+                // Standalone CNPJ match (for A7 Pharma or other orders where CNPJ is on its own line)
+                const standaloneCnpjMatch = trimmedLine.match(/CNPJ:?\s*([\d\.\/\-]+)/i);
+                if (standaloneCnpjMatch && currentClientObj && !currentClientObj.cnpj) {
+                  const cnpjClean = standaloneCnpjMatch[1].replace(/[^\d]/g, '');
+                  if (cnpjClean.length >= 11) {
+                    currentClientObj.cnpj = cnpjClean;
+                    const matchedClient = findBestMatchingClient(cnpjClean, currentClientObj.clientName, allClients);
+                    if (matchedClient) {
+                      currentClientObj.client = matchedClient;
+                      currentClientObj.clientName = matchedClient.name;
+                    }
+                  }
+                }
+
                 // D. INOVAFARMA header
                 const inovafarmaMatch = trimmedLine.match(/Razão\s+Social:\s*([^\n]+)/i);
 
@@ -746,20 +998,19 @@ export default function ImportPanel() {
                     importResults.push(currentClientObj);
                   } else {
                     currentClientObj.clientName = nameRaw;
-                    currentClientObj.cnpj = cnpj;
+                    if (cnpj) currentClientObj.cnpj = cnpj;
                   }
 
                   unmatchedBuffer = [];
 
                   // Try to find the exact client in allClients database
-                  const matchedClient = allClients.find(c => {
-                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
-                    if (cnpj && dbCnpj === cnpj) return true;
-                    return c.name.toLowerCase().includes(nameRaw.toLowerCase()) || nameRaw.toLowerCase().includes(c.name.toLowerCase());
-                  });
+                  const matchedClient = findBestMatchingClient(cnpj, nameRaw, allClients);
                   if (matchedClient) {
                     currentClientObj.client = matchedClient;
                     currentClientObj.clientName = matchedClient.name;
+                    if (!currentClientObj.cnpj && matchedClient.cnpj) {
+                      currentClientObj.cnpj = matchedClient.cnpj.replace(/[^\d]/g, '');
+                    }
                   }
                   continue;
                 }
@@ -798,11 +1049,7 @@ export default function ImportPanel() {
                   importResults.push(currentClientObj);
                   unmatchedBuffer = [];
 
-                  const matchedClient = allClients.find(c => {
-                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
-                    if (cnpj && dbCnpj === cnpj) return true;
-                    return c.name.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(c.name.toLowerCase());
-                  });
+                  const matchedClient = findBestMatchingClient(cnpj, name, allClients);
                   if (matchedClient) {
                     currentClientObj.client = matchedClient;
                     currentClientObj.clientName = matchedClient.name;
@@ -830,13 +1077,7 @@ export default function ImportPanel() {
                   unmatchedBuffer = [];
 
                   // Try to find client by name
-                  const matchedClient = allClients.find(c => {
-                    const dbName = c.name ? c.name.toLowerCase() : '';
-                    const dbTradeName = c.tradeName ? c.tradeName.toLowerCase() : '';
-                    const searchName = nameRaw.toLowerCase();
-                    return dbName.includes(searchName) || searchName.includes(dbName) ||
-                           dbTradeName.includes(searchName) || searchName.includes(dbTradeName);
-                  });
+                  const matchedClient = findBestMatchingClient('', nameRaw, allClients);
                   if (matchedClient) {
                     currentClientObj.client = matchedClient;
                     currentClientObj.clientName = matchedClient.name;
@@ -853,10 +1094,7 @@ export default function ImportPanel() {
                   currentClientObj.cnpj = cnpj;
 
                   // Re-evaluate client lookup with CNPJ
-                  const matchedClient = allClients.find(c => {
-                    const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
-                    return cnpj && dbCnpj === cnpj;
-                  });
+                  const matchedClient = findBestMatchingClient(cnpj, currentClientObj.clientName, allClients);
                   if (matchedClient) {
                     currentClientObj.client = matchedClient;
                     currentClientObj.clientName = matchedClient.name;
@@ -905,6 +1143,140 @@ export default function ImportPanel() {
                 }
 
                 // 2. Check for product patterns
+                // TOP PRIORITY 1: Relatório de Pedido de Compras Pattern (Nazaria / Drogaria Ferreira / Alpha7)
+                // e.g. "7896007542864 ABS INTERNO INTIMUS M KIMBERLY-CLA UN 1 X 1 4"
+                // e.g. "7896007550890 ABS INTIMUS GEL NOTURNO SUAVE C/A KIMBERLY-CLA UN 1 X 1 3"
+                // e.g. "7896018700710 SH HUGGIES 200ML J R UN 1 X 1 4"
+                // e.g. "7891025120025 7891025120025 APTAMIL ACTIVE 800G DANONE UN 1 X 1 3 121,19"
+                const relatorioComprasRegex = /^\s*(\d{8,14})(?:\s+\d{8,14})?\s+(.*?)\s+(UN|CX|FR|AMP|FL|POTE|KG|G|ML|UNID|PCT|CXA|VD)\s+(\d+\s*[xX]\s*\d+)\s+(\d+[\d\.,]*)(?:\s+([\d\.,]+))?(?:\s+.*)?$/i;
+                const relatorioMatch = trimmedLine.match(relatorioComprasRegex);
+                if (relatorioMatch) {
+                  const ean = normalizeEAN(relatorioMatch[1]);
+                  const rawDesc = relatorioMatch[2].trim();
+                  const unit = relatorioMatch[3];
+                  const packing = relatorioMatch[4]; // e.g. "1 X 1"
+                  const quantity = parseInt(relatorioMatch[5].replace(/\./g, '')); // Exact Qtd column!
+                  const priceVal = relatorioMatch[6] ? parseFlexibleNumber(relatorioMatch[6]) : 0;
+
+                  // Separate description and manufacturer if manufacturer is trailing
+                  let desc = rawDesc;
+                  let manufacturer = '';
+                  const knownMfrs = ['KIMBERLY-CLA', 'KIMBERLY-CLARK', 'KIMBERLY', 'J R', 'DANONE', 'UNILEVER', 'JOHNSON', 'P&G', 'HYPERA', 'EMS', 'ACHE', 'MEDLEY', 'EUROFARMA', 'NEO QUIMICA', 'SANOFI', 'KENVUE', 'BIOLAB', 'CIMED', 'GEOLAB'];
+                  for (const km of knownMfrs) {
+                    if (rawDesc.toUpperCase().endsWith(' ' + km)) {
+                      manufacturer = km;
+                      desc = rawDesc.substring(0, rawDesc.length - km.length - 1).trim();
+                      break;
+                    }
+                  }
+                  if (!manufacturer) {
+                    const parts = rawDesc.split(/\s+/);
+                    if (parts.length > 1) {
+                      manufacturer = parts.pop() || '';
+                      desc = parts.join(' ');
+                    }
+                  }
+
+                  if (!currentClientObj) {
+                    const pageTopText = pageLines.slice(0, 15).join(' ');
+                    const topCnpjMatch = pageTopText.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}|\d{8}\/\d{4}-\d{2}|\d{14})/);
+                    const topCnpj = topCnpjMatch ? topCnpjMatch[1].replace(/[^\d]/g, '') : '';
+                    
+                    const matchedClient = allClients.find(c => {
+                      const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                      return topCnpj && dbCnpj === topCnpj;
+                    });
+
+                    currentClientObj = {
+                      clientName: matchedClient?.name || 'Cliente Não Identificado',
+                      cnpj: topCnpj,
+                      client: matchedClient || null,
+                      items: [],
+                      headerInfo: { fornecedor: pageFornecedor || 'NAZARIA DISTRIBUIDORA', condPgto: '', status: 'Pendente', dataEntrega: pageDtEmissao || '', cotacao: pageNumeroPedido ? `Pedido #${pageNumeroPedido}` : 'RELATÓRIO PEDIDO' }
+                    };
+                    importResults.push(currentClientObj);
+                  }
+
+                  const product = allProducts.find(p => normalizeEAN(p.ean) === ean);
+                  const finalEan = product?.ean || ean;
+                  const finalDesc = product?.description || desc;
+                  const inferredMfr = product?.manufacturer || manufacturer || inferManufacturer(desc) || 'OUTROS';
+
+                  if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
+                    currentClientObj.items.push({
+                      ean: finalEan,
+                      quantity: isNaN(quantity) ? 1 : quantity,
+                      description: finalDesc,
+                      found: !!product,
+                      product: product,
+                      price: priceVal || product?.finalPrice || 0,
+                      manufacturer: inferredMfr
+                    });
+                  }
+                  unmatchedBuffer = [];
+                  continue;
+                }
+
+                // Check for Tot. Itens / Tot. Unidade summary line
+                const totSummaryMatch = trimmedLine.match(/Tot\.\s*Itens:\s*(\d+)\s+Tot\.\s*Unidade:\s*(\d+)/i);
+                if (totSummaryMatch && currentClientObj) {
+                  currentClientObj.expectedTotItens = parseInt(totSummaryMatch[1]);
+                  currentClientObj.expectedTotUnidade = parseInt(totSummaryMatch[2]);
+                  unmatchedBuffer = [];
+                  continue;
+                }
+
+                // TOP PRIORITY 2: Pedido de Compra / Espelho do Pedido with Discount% & Quantity (A7 Pharma / Nazaria)
+                // e.g. "LEITE DANONE APTAMIL PREMIUM 1 0-6M 800G 7891025111825 DANONE 55,76 0,00 % 50 2.788,24"
+                const espelhoPedidoWithDiscountRegex = /^(.*?)\s+(\d{8,14})\s+([A-Za-z0-9\.\-\/]+?)\s+([\d\.,]+)\s+([\d\.,]+\s*%?)\s+(\d+)\s+([\d\.,]+)$/i;
+                const espelhoDiscountMatch = trimmedLine.match(espelhoPedidoWithDiscountRegex);
+                if (espelhoDiscountMatch) {
+                  const desc = espelhoDiscountMatch[1].trim();
+                  const ean = normalizeEAN(espelhoDiscountMatch[2]);
+                  const manufacturer = espelhoDiscountMatch[3].trim();
+                  const priceVal = parseFlexibleNumber(espelhoDiscountMatch[4]);
+                  const quantity = parseInt(espelhoDiscountMatch[6]); // Exact Qtd column!
+
+                  if (!currentClientObj) {
+                    const pageTopText = pageLines.slice(0, 15).join(' ');
+                    const topCnpjMatch = pageTopText.match(/(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2})/);
+                    const topCnpj = topCnpjMatch ? topCnpjMatch[1].replace(/[^\d]/g, '') : '';
+                    
+                    const matchedClient = allClients.find(c => {
+                      const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
+                      return topCnpj && dbCnpj === topCnpj;
+                    });
+
+                    currentClientObj = {
+                      clientName: matchedClient?.name || 'Cliente Não Identificado',
+                      cnpj: topCnpj,
+                      client: matchedClient || null,
+                      items: [],
+                      headerInfo: { fornecedor: 'NAZARIA DISTRIBUIDORA', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: 'PEDIDO DE COMPRA' }
+                    };
+                    importResults.push(currentClientObj);
+                  }
+
+                  const product = allProducts.find(p => normalizeEAN(p.ean) === ean);
+                  const finalEan = product?.ean || ean;
+                  const finalDesc = product?.description || desc;
+                  const inferredMfr = product?.manufacturer || manufacturer || inferManufacturer(desc) || 'OUTROS';
+
+                  if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
+                    currentClientObj.items.push({
+                      ean: finalEan,
+                      quantity: isNaN(quantity) ? 1 : quantity,
+                      description: finalDesc,
+                      found: !!product,
+                      product: product,
+                      price: priceVal || product?.finalPrice || 0,
+                      manufacturer: inferredMfr
+                    });
+                  }
+                  unmatchedBuffer = [];
+                  continue;
+                }
+
                 // A.0.0 Sta Vitoria / Nazaria Pedido de Compra product pattern
                 // e.g. "080229 7891150095595 COND DOVE BOND INT REP 250ML UN 2,00 24,47 48,94"
                 // e.g. "024612 7791293025537 DES REXONA AEROSOL ANTIBACTERIAL MEN 90G UN UNIDADE com 1 6,00 11,80 70,80"
@@ -920,8 +1292,8 @@ export default function ImportPanel() {
                   const qtyStr = staVitoriaMatch[6];
                   const priceStr = staVitoriaMatch[7];
 
-                  const quantity = parseFloat(qtyStr.replace(/\./g, '').replace(',', '.'));
-                  const priceVal = parseFloat(priceStr.replace(/\./g, '').replace(',', '.'));
+                  const quantity = parseFlexibleNumber(qtyStr);
+                  const priceVal = parseFlexibleNumber(priceStr);
 
                   if (!currentClientObj) {
                     const pageTopText = pageLines.slice(0, 10).join(' ');
@@ -974,8 +1346,8 @@ export default function ImportPanel() {
                   if (matchEan) {
                     const ean = normalizeEAN(matchEan[2]);
                     const desc = matchEan[3].trim();
-                    const quantity = parseFloat(matchEan[4].replace(/\./g, '').replace(',', '.'));
-                    const priceVal = parseFloat(matchEan[7].replace(/\./g, '').replace(',', '.'));
+                    const quantity = parseFlexibleNumber(matchEan[4]);
+                    const priceVal = parseFlexibleNumber(matchEan[7]);
                     
                     if (!currentClientObj) {
                       currentClientObj = {
@@ -1010,8 +1382,8 @@ export default function ImportPanel() {
                     // If description starts with a 13-digit EAN, skip to avoid misclassifying EAN lines
                     if (!descRaw.match(/^\d{13}\b/)) {
                       const desc = descRaw;
-                      const quantity = parseFloat(matchNoEan[3].replace(/\./g, '').replace(',', '.'));
-                      const priceVal = parseFloat(matchNoEan[6].replace(/\./g, '').replace(',', '.'));
+                      const quantity = parseFlexibleNumber(matchNoEan[3]);
+                      const priceVal = parseFlexibleNumber(matchNoEan[6]);
                       
                       if (!currentClientObj) {
                         currentClientObj = {
@@ -1049,7 +1421,7 @@ export default function ImportPanel() {
                   const ean = normalizeEAN(inovafarmaMatchRow[2]);
                   const desc = inovafarmaMatchRow[4].trim();
                   const quantity = parseInt(inovafarmaMatchRow[6]);
-                  const priceVal = parseFloat(inovafarmaMatchRow[7].replace(/\./g, '').replace(',', '.'));
+                  const priceVal = parseFlexibleNumber(inovafarmaMatchRow[7]);
                   
                   if (!currentClientObj) {
                     currentClientObj = {
@@ -1078,7 +1450,7 @@ export default function ImportPanel() {
 
                 // B. A7 Pharma Pedido de Compra / Drogarias Ultra Popular pattern
                 // We match: EAN, Price, Discount%, Qtd, Total
-                const regexA7 = /\b(\d{8,14})\b.*?\b(\d+[\d\.,]*)\s+(\d+[\d\.,]*\s*%)\s+(\d+)\s+(\d+[\d\.,]*)\b/;
+                const regexA7 = /\b(\d{8,14})\b.*?\b(\d+[\d\.,]*)\s+(\d+[\d\.,]*\s*%?)\s+(\d+)\s+(\d+[\d\.,]*)\b/;
                 const matchA7 = trimmedLine.match(regexA7);
                 if (matchA7) {
                   const ean = normalizeEAN(matchA7[1]);
@@ -1088,14 +1460,13 @@ export default function ImportPanel() {
                   const priceIndex = trimmedLine.indexOf(priceStr, eanIndex + eanStr.length);
 
                   const partBefore = trimmedLine.substring(0, eanIndex).trim();
-                  const partBetween = trimmedLine.substring(eanIndex + eanStr.length, priceIndex).trim();
+                  const partBetween = priceIndex > eanIndex ? trimmedLine.substring(eanIndex + eanStr.length, priceIndex).trim() : trimmedLine.substring(eanIndex + eanStr.length).trim();
 
                   const quantity = parseInt(matchA7[4]);
-                  const priceVal = parseFloat(matchA7[2].replace(/\./g, '').replace(',', '.'));
+                  const priceVal = parseFlexibleNumber(matchA7[2]);
 
                   // Extract description from previous unmatched line(s) and current line parts
                   let desc = partBetween || partBefore;
-                  // If we have unmatched lines in buffer, append them!
                   if (unmatchedBuffer.length > 0) {
                     const previousDesc = unmatchedBuffer.join(' ');
                     desc = previousDesc + (desc ? ' ' + desc : '');
@@ -1103,7 +1474,7 @@ export default function ImportPanel() {
                   desc = desc.trim();
 
                   // Clean description of trailing or leading junk (like manufacturer code or extra numbers)
-                  const cleanKeywords = ['UNILEVER BRASIL', 'UNILEVER', 'LTDA', 'BRASIL', 'INDUSTRIAL'];
+                  const cleanKeywords = ['UNILEVER BRASIL', 'UNILEVER', 'LTDA', 'BRASIL', 'INDUSTRIAL', 'DANONE'];
                   cleanKeywords.forEach(kw => {
                     const regexClean = new RegExp('\\b' + kw + '\\b', 'gi');
                     desc = desc.replace(regexClean, '');
@@ -1115,20 +1486,25 @@ export default function ImportPanel() {
                       clientName: 'Cliente Não Identificado',
                       cnpj: '',
                       items: [],
-                      headerInfo: { fornecedor: '', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: '' }
+                      headerInfo: { fornecedor: 'A7 PHARMA', condPgto: '', status: 'Pendente', dataEntrega: '', cotacao: '' }
                     };
                     importResults.push(currentClientObj);
                   }
 
                   const product = allProducts.find(prod => normalizeEAN(prod.ean) === ean);
+                  const finalEan = product?.ean || ean;
+                  const finalDesc = product?.description || desc;
+                  const inferredMfr = product?.manufacturer || inferManufacturer(desc) || 'OUTROS';
+
                   if (!currentClientObj.items.find((item: any) => normalizeEAN(item.ean) === ean)) {
                     currentClientObj.items.push({
-                      ean,
+                      ean: finalEan,
                       quantity: isNaN(quantity) ? 1 : quantity,
-                      description: product?.description || desc,
+                      description: finalDesc,
                       found: !!product,
                       product: product,
-                      price: priceVal || product?.finalPrice || 0
+                      price: priceVal || product?.finalPrice || 0,
+                      manufacturer: inferredMfr
                     });
                   }
                   unmatchedBuffer = [];
@@ -1178,7 +1554,7 @@ export default function ImportPanel() {
                   const ean = normalizeEAN(hbn1SingleMatch[2]);
                   const desc = hbn1SingleMatch[3].trim();
                   const quantity = parseInt(hbn1SingleMatch[7]);
-                  const priceVal = parseFloat(hbn1SingleMatch[6].replace(/\./g, '').replace(',', '.'));
+                  const priceVal = parseFlexibleNumber(hbn1SingleMatch[6]);
 
                   if (!currentClientObj) {
                     currentClientObj = {
@@ -1226,7 +1602,7 @@ export default function ImportPanel() {
                 // 3) Multi-line price line match (Matches price information line starting with "R$")
                 const hbn1PriceMatch = trimmedLine.match(/R\$\s*([\d\.,]+)\s+([\d\.,]+%|[-–—])\s+R\$\s*([\d\.,]+)\s+(\d+)\s+R\$\s*([\d\.,]+)/i);
                 if (hbn1PriceMatch && hbn1MultiItem) {
-                  const priceVal = parseFloat(hbn1PriceMatch[3].replace(/\./g, '').replace(',', '.'));
+                  const priceVal = parseFlexibleNumber(hbn1PriceMatch[3]);
                   const quantity = parseInt(hbn1PriceMatch[4]);
                   const desc = hbn1MultiItem.descParts.join(' ').trim();
                   const ean = hbn1MultiItem.ean;
@@ -1280,7 +1656,7 @@ export default function ImportPanel() {
                   const ean = normalizeEAN(normalMatch[1]);
                   const desc = normalMatch[2].trim();
                   const quantity = parseInt(normalMatch[3].replace(/\./g, ''));
-                  const priceVal = parseFloat(normalMatch[4].replace(/\./g, '').replace(',', '.'));
+                  const priceVal = parseFlexibleNumber(normalMatch[4]);
 
                   if (!currentClientObj) {
                     currentClientObj = {
@@ -1333,14 +1709,54 @@ export default function ImportPanel() {
               }
             }
 
-            // Merge identical clients
+            // Merge identical clients / orders (preserving distinct orders per CNPJ)
             const mergedResults: any[] = [];
             importResults.forEach(res => {
-              const existing = mergedResults.find(m => 
-                (res.cnpj && m.cnpj && res.cnpj === m.cnpj) ||
-                (res.client && m.client && res.client.id === m.client.id) ||
-                (res.clientName.toLowerCase() === m.clientName.toLowerCase())
-              );
+              const resCnpjClean = res.cnpj ? res.cnpj.replace(/[^\d]/g, '') : '';
+              const existing = mergedResults.find(m => {
+                // If distinct order numbers exist, NEVER merge!
+                if (res.orderNumber && m.orderNumber && res.orderNumber !== m.orderNumber) {
+                  return false;
+                }
+                if (res.numeroPedido && m.numeroPedido && res.numeroPedido !== m.numeroPedido) {
+                  return false;
+                }
+                if (res.headerInfo?.cotacao && m.headerInfo?.cotacao && res.headerInfo.cotacao !== m.headerInfo.cotacao) {
+                  return false;
+                }
+                // If one has an order number and the other doesn't, do NOT merge
+                if (Boolean(res.orderNumber || res.numeroPedido) !== Boolean(m.orderNumber || m.numeroPedido)) {
+                  return false;
+                }
+                // If filiais are specified and different, NEVER merge
+                if (res.filial && m.filial && res.filial !== m.filial) {
+                  return false;
+                }
+
+                const mCnpjClean = m.cnpj ? m.cnpj.replace(/[^\d]/g, '') : '';
+                // If both have CNPJ:
+                if (resCnpjClean && mCnpjClean) {
+                  if (res.orderNumber && m.orderNumber) {
+                    return resCnpjClean === mCnpjClean && res.orderNumber === m.orderNumber;
+                  }
+                  if (!res.orderNumber && !m.orderNumber) {
+                    return resCnpjClean === mCnpjClean;
+                  }
+                  return false;
+                }
+
+                // If both have matched database client, match if same ID and neither has distinct order number
+                if (res.client && m.client && !res.orderNumber && !m.orderNumber) {
+                  return res.client.id === m.client.id;
+                }
+                // Match by name ONLY if name is valid, NOT "Cliente Não Identificado", and NO distinct order numbers
+                if (res.clientName && res.clientName !== 'Cliente Não Identificado' && 
+                    m.clientName && m.clientName !== 'Cliente Não Identificado' &&
+                    !res.orderNumber && !m.orderNumber) {
+                  return res.clientName.toLowerCase().trim() === m.clientName.toLowerCase().trim();
+                }
+                return false;
+              });
               
               if (existing) {
                 res.items.forEach((item: any) => {
@@ -1422,12 +1838,7 @@ export default function ImportPanel() {
               const cleanCnpj = order.cnpj ? order.cnpj.replace(/[^\d]/g, '') : '';
               
               // Find matching client in database
-              const matchedClient = allClients.find(c => {
-                const dbCnpj = c.cnpj ? c.cnpj.replace(/[^\d]/g, '') : '';
-                return (cleanCnpj && dbCnpj === cleanCnpj) || 
-                       (order.clientName && c.name.toLowerCase().includes(order.clientName.toLowerCase())) ||
-                       (order.clientName && order.clientName.toLowerCase().includes(c.name.toLowerCase()));
-              });
+              const matchedClient = findBestMatchingClient(cleanCnpj, order.clientName, allClients);
 
               const mappedItems = (order.items || []).map((item: any) => {
                 const ean = normalizeEAN(String(item.ean || ''));
@@ -1440,7 +1851,7 @@ export default function ImportPanel() {
                   description: product?.description || item.description || 'Produto não encontrado',
                   found: !!product,
                   product: product,
-                  price: parseFloat(item.price) || product?.finalPrice || 0,
+                  price: parseFlexibleNumber(item.price) || product?.finalPrice || 0,
                   manufacturer: inferredMfr
                 };
               }).filter((item: any) => item.ean);
@@ -1530,7 +1941,12 @@ export default function ImportPanel() {
         if (selectedItems.length > 0) {
           const cartKey = `cart_${client.id}`;
           const saved = localStorage.getItem(cartKey);
-          let cartItems: any[] = saved ? JSON.parse(saved) : [];
+          let cartItems: any[] = [];
+          try {
+            cartItems = saved ? JSON.parse(saved) : [];
+          } catch (e) {
+            cartItems = [];
+          }
 
           selectedItems.forEach((item: any) => {
             const existing = cartItems.find(i => i.id === item.product.id);
@@ -1581,75 +1997,97 @@ export default function ImportPanel() {
     }
   };
 
-  const exportIndividualOrderToPDF = (clientIdx: number) => {
+  const isItemMatchingExportFilter = (
+    item: any,
+    exportFilter: 'all' | 'noStock' | 'notFound' | 'unavailable' = 'all'
+  ) => {
+    if (exportFilter === 'all') return true;
+
+    const isFound = item.found !== false && item.found !== undefined ? item.found : !!item.product;
+    const hasStock = item.product
+      ? item.product.stock > 0
+      : (item.status !== 'Sem estoque' && item.hasStock !== false);
+
+    if (exportFilter === 'noStock') {
+      return isFound && !hasStock;
+    }
+    if (exportFilter === 'notFound') {
+      return !isFound;
+    }
+    if (exportFilter === 'unavailable') {
+      return !isFound || !hasStock;
+    }
+    return true;
+  };
+
+  const exportIndividualOrderToPDF = async (
+    clientIdx: number,
+    exportFilter: 'all' | 'noStock' | 'notFound' | 'unavailable' = 'all'
+  ) => {
     const res = results[clientIdx];
-    const selectedItems = res.items.filter((_: any, itemIdx: number) => 
-      checkedItems.has(`${clientIdx}-${itemIdx}`)
+    if (!res) return;
+
+    const selectedItems = res.items.filter((item: any, itemIdx: number) => 
+      checkedItems.has(`${clientIdx}-${itemIdx}`) && isItemMatchingExportFilter(item, exportFilter)
     );
 
     if (selectedItems.length === 0) {
-      toast.error('Nenhum item selecionado para exportar');
+      if (exportFilter === 'noStock') toast.error('Nenhum item sem estoque encontrado neste pedido');
+      else if (exportFilter === 'notFound') toast.error('Nenhum item não encontrado neste pedido');
+      else if (exportFilter === 'unavailable') toast.error('Nenhum item indisponível neste pedido');
+      else toast.error('Nenhum item selecionado para exportar');
       return;
     }
 
+    const thumbnails = await preloadProductThumbnails(selectedItems, allProducts);
+
     const doc = new jsPDF();
     
-    // Header helper
-    const drawHeader = (d: jsPDF, pageNum: number, total: number, clientCode: string) => {
-      d.setFillColor(255, 107, 0);
-      d.rect(14, 15, 182, 35, 'F');
-      d.setFontSize(24);
-      d.setTextColor(255, 255, 255);
-      d.setFont('helvetica', 'bold');
-      d.text('VENDAS HBN1', 105, 30, { align: 'center' });
-      d.setFontSize(10);
-      d.setFont('helvetica', 'normal');
-      d.text('COMPROVANTE DE PEDIDO ─ IMPORTAÇÃO', 105, 38, { align: 'center' });
-      const region = getRegionalLabel(selectedRegional as RegionalKey);
-      d.setFontSize(8);
-      const contactStr = `${region} • Tel: ${profile?.phone || '(86) 99964-7573'} • ${profile?.email || 'leonelamorimm@gmail.com'}`;
-      d.text(contactStr, 105, 43, { align: 'center' });
-      d.text(`${new Date().toLocaleString('pt-BR')} • ${total} pedido(s)`, 105, 48, { align: 'center' });
-    };
+    const rawCode = res.headerInfo?.cotacao || res.client?.id || '';
+    const digitsOnly = rawCode.replace(/\D/g, '');
+    const clientCode = digitsOnly.length >= 5 ? digitsOnly : '1785350359114';
 
-    const drawClientData = (d: jsPDF, y: number, r: any) => {
-      d.setFillColor(255, 107, 0);
-      d.rect(14, y, 182, 6, 'F');
-      d.setFontSize(8);
-      d.setTextColor(255, 255, 255);
-      d.setFont('helvetica', 'bold');
-      d.text('DADOS DO CLIENTE', 105, y + 4.5, { align: 'center' });
+    const subtitleText = exportFilter === 'noStock'
+      ? 'RELATÓRIO DE ITENS SEM ESTOQUE'
+      : exportFilter === 'notFound'
+      ? 'RELATÓRIO DE ITENS NÃO ENCONTRADOS'
+      : exportFilter === 'unavailable'
+      ? 'RELATÓRIO DE ITENS INDISPONÍVEIS'
+      : 'COMPROVANTE DE PEDIDO';
 
-      y += 10;
-      d.setTextColor(0, 0, 0);
-      // Ensure we pull clean names without header noise
-      const cleanName = r.clientName?.split('Fornecedor:')[0]?.trim() || r.clientName || 'N/A';
-      const cleanTradeName = r.client?.tradeName || cleanName;
-      const cleanLegalName = r.client?.name || cleanName;
-      
-      const labels = ['Nome Fantasia', 'ID Cliente', 'Nome', 'CNPJ', 'Vendedor', 'Cidade/Estado'];
-      const values = [
-        cleanTradeName.toUpperCase(),
-        r.client?.id || 'N/A',
-        cleanLegalName.toUpperCase(),
-        r.cnpj || r.client?.cnpj || 'N/A',
-        (profile?.name || 'Leonel Amorim').toUpperCase(),
-        (r.client?.city ? `${r.client.city} / ${r.client.state || 'MA'}` : 'N/A').toUpperCase()
-      ];
-      labels.forEach((label, i) => {
-        d.setFont('helvetica', 'bold');
-        d.text(label, 18, y + (i * 5));
-        d.setFont('helvetica', 'normal');
-        d.text(String(values[i]), 50, y + (i * 5));
-      });
-      return y + (labels.length * 5) + 5;
-    };
+    drawPDFHeader(doc, {
+      subtitle: subtitleText,
+      orderNumber: `PED${clientCode}`,
+      dateTimeStr: new Date().toLocaleString('pt-BR'),
+      regionStr: getRegionalLabel(selectedRegional as RegionalKey) || 'TERESINA - PI',
+      phoneStr: profile?.phone || '(86) 99964-7573',
+      sellerStr: profile?.name || 'LEONEL'
+    });
 
-    const clientCode = res.headerInfo?.cotacao || res.client?.id?.substring(0, 5) || '30214';
-    drawHeader(doc, 1, 1, clientCode);
-    let currentY = drawClientData(doc, 55, res);
+    const cleanName = res.clientName?.split('Fornecedor:')[0]?.trim() || res.clientName || 'N/A';
+    const cleanTradeName = res.client?.tradeName || cleanName;
+    const cleanLegalName = res.client?.name || cleanName;
 
-    const groupedItems = selectedItems.reduce((acc: any, item) => {
+    const clientRawCnpj = res.client?.cnpj || res.cnpj;
+    const formattedCnpj = clientRawCnpj ? formatCNPJ(clientRawCnpj) : 'N/A';
+    const displayAddress = res.client?.address ? res.client.address.toUpperCase() : 'N/A';
+    const displayCityState = res.client?.city ? `${res.client.city} / ${res.client.state || 'PI'}`.toUpperCase() : 'N/A';
+
+    const clientFields = [
+      { icon: 'user', label: 'Cliente', value: cleanTradeName.toUpperCase() },
+      { icon: 'user', label: 'Vendedor', value: (profile?.name || 'LEONEL AMORIM').toUpperCase() },
+      { icon: 'id', label: 'ID Cliente', value: res.client?.id || 'N/A' },
+      { icon: 'email', label: 'E-mail', value: (res.client?.email || profile?.email || 'N/A').toUpperCase() },
+      { icon: 'user', label: 'Nome', value: cleanLegalName.toUpperCase() },
+      { icon: 'mapPin', label: 'Endereço', value: displayAddress },
+      { icon: 'building', label: 'CNPJ', value: formattedCnpj },
+      { icon: 'mapPin', label: 'Cidade/Estado', value: displayCityState },
+      { icon: 'phone', label: 'Celular', value: res.client?.phone || '-' }
+    ];
+
+    let currentY = drawClientDataCard(doc, 42, clientFields);
+
+    const groupedItems = selectedItems.reduce((acc: any, item: any) => {
       const manufacturer = item.manufacturer || item.product?.manufacturer || 'OUTROS';
       if (!acc[manufacturer]) acc[manufacturer] = [];
       acc[manufacturer].push(item);
@@ -1657,103 +2095,163 @@ export default function ImportPanel() {
     }, {});
 
     Object.entries(groupedItems).forEach(([mName, mItems]: [string, any]) => {
-      if (currentY > 220) {
+      if (currentY > 210) {
         doc.addPage();
         currentY = 20;
       }
-
-      let mPrecoSubtotal = 0;
-      let mNoStock = 0;
-      let mDiscount = 0;
 
       const tableData = mItems.map((item: any) => {
         const salePrice = item.product?.salePrice || item.price || 0;
         const finalPrice = item.product?.finalPrice || item.price || 0;
         const discVal = salePrice > 0 ? (1 - finalPrice / salePrice) * 100 : 0;
-        const discountStr = discVal.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
-        const hasStock = item.product ? item.product.stock > 0 : false;
-        
-        const rowSubtotal = Math.round(finalPrice * item.quantity * 100) / 100;
-        const rowPrecoSubtotal = Math.round(salePrice * item.quantity * 100) / 100;
-        const rowDiscount = Math.round((salePrice - finalPrice) * item.quantity * 100) / 100;
-
-        mPrecoSubtotal += rowPrecoSubtotal;
-        mDiscount += rowDiscount;
-        if (!hasStock) {
-          mNoStock += rowSubtotal;
-        }
+        const discountStr = discVal > 0 ? `${discVal.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%` : '-';
+        const isFound = item.found !== false && item.found !== undefined ? item.found : !!item.product;
+        const hasStock = item.product ? item.product.stock > 0 : (item.status !== 'Sem estoque' && item.hasStock !== false);
+        const rowSubtotal = Math.round(finalPrice * (item.quantity || 1) * 100) / 100;
+        const statusLabel = !isFound ? 'Não encontrado' : (hasStock ? '✔ OK' : 'Sem estoque');
 
         return [
-          item.product?.id || 'N/A',
-          item.ean,
-          item.description.toUpperCase(),
+          '',
+          item.product?.id || item.code || 'N/A',
+          item.ean || 'N/A',
+          (item.description || 'SEM DESCRIÇÃO').toUpperCase(),
           formatCurrency(salePrice),
-          `${discountStr}%`,
+          discountStr,
           formatCurrency(finalPrice),
-          item.quantity,
+          item.quantity || 1,
           formatCurrency(rowSubtotal),
-          hasStock ? 'OK' : 'Sem estoque'
+          statusLabel
         ];
       });
+
+      let indSubtotal = 0;
+      let indNoStock = 0;
+      let indDiscount = 0;
+
+      mItems.forEach((item: any) => {
+        const salePrice = item.product?.salePrice || item.price || 0;
+        const finalPrice = item.product?.finalPrice || item.price || 0;
+        const qty = item.quantity || 1;
+        const itemSaleSubtotal = salePrice * qty;
+
+        indSubtotal += itemSaleSubtotal;
+
+        const isFound = item.found !== false && item.found !== undefined ? item.found : !!item.product;
+        const hasStock = item.product ? item.product.stock > 0 : (item.status !== 'Sem estoque' && item.hasStock !== false);
+        if (!isFound || !hasStock) {
+          indNoStock += itemSaleSubtotal;
+        } else {
+          indDiscount += Math.max(0, (salePrice - finalPrice) * qty);
+        }
+      });
+
+      indSubtotal = Math.round(indSubtotal * 100) / 100;
+      indNoStock = Math.round(indNoStock * 100) / 100;
+      indDiscount = Math.round(indDiscount * 100) / 100;
+      const indTotal = Math.max(0, Math.round((indSubtotal - indNoStock - indDiscount) * 100) / 100);
 
       autoTable(doc, {
         startY: currentY,
         head: [
-          [{ content: `INDÚSTRIA: ${mName.toUpperCase()}`, colSpan: 9, styles: { halign: 'center', fillColor: [255, 107, 0], textColor: 255, fontSize: 9, fontStyle: 'bold' } }],
-          ['COD.', 'EAN', 'DESCRICAO', 'PRECO', 'DESC%', 'PR.FINAL', 'QT', 'SUBTOTAL', 'STATUS']
+          [{ content: `INDÚSTRIA: ${mName.toUpperCase()}`, colSpan: 10, styles: { halign: 'center', fillColor: [15, 23, 42], textColor: [255, 255, 255], fontSize: 9, fontStyle: 'bold', cellPadding: { top: 3, bottom: 3 } } }],
+          ['FOTO', 'COD.', 'EAN', 'DESCRICAO', 'PRECO', 'DESC %', 'PR. FINAL', 'QT', 'SUBTOTAL', 'STATUS']
         ],
         body: tableData,
         theme: 'grid',
-        headStyles: { fillColor: [255, 107, 0], textColor: 255, fontSize: 7, fontStyle: 'bold', halign: 'center' },
-        styles: { fontSize: 7, cellPadding: 1.5, overflow: 'linebreak' },
+        headStyles: { 
+          fillColor: [255, 107, 0],
+          textColor: [255, 255, 255], 
+          fontSize: 7.5, 
+          fontStyle: 'bold', 
+          halign: 'center',
+          valign: 'middle',
+          cellPadding: { top: 2.5, bottom: 2.5, left: 1, right: 1 }
+        },
+        bodyStyles: { fontSize: 7, halign: 'center', valign: 'middle', textColor: [15, 23, 42], minCellHeight: 12 },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        tableLineColor: [226, 232, 240],
+        tableLineWidth: 0.2,
         columnStyles: {
-          0: { halign: 'center', cellWidth: 18 },
-          1: { halign: 'center', cellWidth: 24 },
-          2: { halign: 'left', cellWidth: 'auto' },
-          3: { halign: 'right', cellWidth: 18 },
-          4: { halign: 'center', cellWidth: 15 },
-          5: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 18 },
-          6: { halign: 'center', cellWidth: 10 },
-          7: { halign: 'right', fontStyle: 'bold', textColor: [200, 0, 0], cellWidth: 22 },
-          8: { halign: 'center', cellWidth: 20 }
+          0: { halign: 'center', cellWidth: 14 },
+          1: { halign: 'center', cellWidth: 14 },
+          2: { halign: 'center', cellWidth: 22 },
+          3: { halign: 'left', cellWidth: 'auto' },
+          4: { halign: 'right', textColor: [100, 116, 139], cellWidth: 16 },
+          5: { halign: 'center', fontStyle: 'bold', textColor: [22, 163, 74], cellWidth: 15 },
+          6: { halign: 'right', fontStyle: 'bold', textColor: [15, 23, 42], cellWidth: 16 },
+          7: { halign: 'center', cellWidth: 10 },
+          8: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 18 },
+          9: { halign: 'center', cellWidth: 18 }
         },
         didParseCell: (data) => {
-          if (data.section === 'body' && data.column.index === 8) {
-            if (data.cell.text[0] === 'OK') data.cell.styles.textColor = [0, 150, 0];
-            else { data.cell.styles.textColor = [200, 0, 0]; data.cell.styles.fontStyle = 'bold'; }
+          if (data.section === 'body' && data.column.index === 9) {
+            const rawVal = String(data.cell.raw || '');
+            if (rawVal.toLowerCase().includes('não encontrado')) {
+              data.cell.styles.textColor = [220, 38, 38];
+              data.cell.styles.fontStyle = 'bold';
+            } else if (rawVal.toLowerCase().includes('sem estoque')) {
+              data.cell.styles.textColor = [234, 88, 12];
+              data.cell.styles.fontStyle = 'bold';
+            } else {
+              data.cell.styles.textColor = [22, 163, 74];
+              data.cell.styles.fontStyle = 'bold';
+            }
           }
-        }
+        },
+        didDrawCell: (data) => {
+          if (data.section === 'body' && data.column.index === 0) {
+            const item = mItems[data.row.index];
+            if (item) {
+              const keyCandidates = [
+                item.product?.id ? String(item.product.id).trim() : '',
+                item.id ? String(item.id).trim() : '',
+                item.product?.ean ? String(item.product.ean).trim() : '',
+                item.ean ? String(item.ean).trim() : '',
+                item.code ? String(item.code).trim() : '',
+                item.description ? String(item.description).trim() : '',
+                item.product?.description ? String(item.product.description).trim() : '',
+                String(item.product?.id || item.id || item.ean || item.code || item.description || '')
+              ];
+              let imgData: string | null = null;
+              for (const k of keyCandidates) {
+                if (k && thumbnails[k]) {
+                  imgData = thumbnails[k];
+                  break;
+                }
+              }
+
+              if (imgData) {
+                try {
+                  doc.setFillColor(255, 255, 255);
+                  doc.setDrawColor(226, 232, 240);
+                  doc.roundedRect(data.cell.x + 1.5, data.cell.y + 1, 11, 10, 0.5, 0.5, 'FD');
+                  const imgFormat = imgData.startsWith('data:image/png') ? 'PNG' : 'JPEG';
+                  doc.addImage(imgData, imgFormat, data.cell.x + 2, data.cell.y + 1.5, 10, 9, undefined, 'FAST');
+                } catch (e) {
+                  // ignore
+                }
+              }
+            }
+          }
+        },
+        margin: { left: 14, right: 14 }
       });
 
       currentY = (doc as any).lastAutoTable.finalY + 3;
-
-      const mSubtotalVal = Math.round(mPrecoSubtotal * 100) / 100;
-      const mNoStockVal = Math.round(mNoStock * 100) / 100;
-      const mDiscountVal = Math.round(mDiscount * 100) / 100;
-      const mTotalVal = Math.round((mPrecoSubtotal - mNoStock - mDiscount) * 100) / 100;
-
-      if (currentY > 255) {
-        doc.addPage();
-        currentY = 20;
-      }
-
-      const drawSummaryRow = (label: string, value: string, color: [number, number, number] = [0,0,0]) => {
-        doc.setFillColor(245, 245, 245);
-        doc.rect(110, currentY, 86, 5, 'F');
-        doc.setFontSize(8);
-        doc.setFont('helvetica', 'bold');
-        doc.setTextColor(100, 100, 100);
-        doc.text(label, 114, currentY + 3.5);
-        doc.setTextColor(color[0], color[1], color[2]);
-        doc.text(value, 192, currentY + 3.5, { align: 'right' });
-        currentY += 5.5;
-      };
-
-      drawSummaryRow(`SUBTOTAL ${mName.toUpperCase()}`, formatCurrency(mSubtotalVal));
-      drawSummaryRow(`SEM ESTOQUE ${mName.toUpperCase()}`, formatCurrency(mNoStockVal), [200, 0, 0]);
-      drawSummaryRow(`DESCONTO ${mName.toUpperCase()}`, `-${formatCurrency(mDiscountVal)}`, [0, 150, 0]);
-      drawSummaryRow(`TOTAL ${mName.toUpperCase()}`, formatCurrency(mTotalVal), [0, 50, 100]);
-      
+      currentY = drawBottomSummaryCards(
+        doc,
+        currentY,
+        {
+          subtotal: indSubtotal,
+          discount: indDiscount,
+          noStock: indNoStock,
+          finalTotal: indTotal
+        },
+        {
+          title: `Resumo - INDÚSTRIA: ${mName.toUpperCase()}`,
+          totalLabel: `TOTAL INDÚSTRIA (${mName.toUpperCase()})`
+        }
+      );
       currentY += 4;
     });
 
@@ -1764,52 +2262,33 @@ export default function ImportPanel() {
     selectedItems.forEach((item: any) => {
       const salePrice = item.product?.salePrice || item.price || 0;
       const finalPrice = item.product?.finalPrice || item.price || 0;
-      
-      const rowSubtotal = Math.round(finalPrice * item.quantity * 100) / 100;
-      const rowPrecoSubtotal = Math.round(salePrice * item.quantity * 100) / 100;
-      const rowDiscount = Math.round((salePrice - finalPrice) * item.quantity * 100) / 100;
+      const qty = item.quantity || 1;
+      const itemSaleSubtotal = salePrice * qty;
 
-      calculatedPrecoSubtotal += rowPrecoSubtotal;
-      calculatedDiscount += rowDiscount;
-      
-      const hasStock = item.product ? item.product.stock > 0 : false;
-      if (!hasStock) {
-        calculatedNoStock += rowSubtotal;
+      calculatedPrecoSubtotal += itemSaleSubtotal;
+
+      const isFound = item.found !== false && item.found !== undefined ? item.found : !!item.product;
+      const hasStock = item.product ? item.product.stock > 0 : (item.status !== 'Sem estoque' && item.hasStock !== false);
+      if (!isFound || !hasStock) {
+        calculatedNoStock += itemSaleSubtotal;
+      } else {
+        calculatedDiscount += Math.max(0, (salePrice - finalPrice) * qty);
       }
     });
 
     const subtotal = Math.round(calculatedPrecoSubtotal * 100) / 100;
     const noStock = Math.round(calculatedNoStock * 100) / 100;
     const discount = Math.round(calculatedDiscount * 100) / 100;
-    const total = Math.round((subtotal - noStock - discount) * 100) / 100;
+    const total = Math.max(0, Math.round((subtotal - noStock - discount) * 100) / 100);
 
-    if (currentY > 240) {
-      doc.addPage();
-      currentY = 20;
-    }
+    currentY = drawBottomSummaryCards(doc, currentY, {
+      subtotal: subtotal,
+      noStock: noStock,
+      discount: discount,
+      finalTotal: total
+    });
 
-    doc.setFontSize(9);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(100, 100, 100);
-    doc.text('SUBTOTAL GERAL', 160, currentY, { align: 'right' });
-    doc.text(formatCurrency(subtotal), 196, currentY, { align: 'right' });
-    doc.setTextColor(200, 0, 0);
-    doc.text('SEM ESTOQUE GERAL', 160, currentY + 6, { align: 'right' });
-    doc.text(formatCurrency(noStock), 196, currentY + 6, { align: 'right' });
-    doc.setTextColor(0, 150, 0);
-    doc.text('DESCONTO GERAL', 160, currentY + 12, { align: 'right' });
-    doc.text(`-${formatCurrency(discount)}`, 196, currentY + 12, { align: 'right' });
-    doc.setFillColor(240, 240, 240);
-    doc.rect(140, currentY + 15, 60, 8, 'F');
-    doc.setFontSize(11);
-    doc.setTextColor(0, 50, 100);
-    doc.text('TOTAL GERAL', 160, currentY + 21, { align: 'right' });
-    doc.text(formatCurrency(total), 196, currentY + 21, { align: 'right' });
-
-    doc.setFontSize(8);
-    doc.setTextColor(150, 150, 150);
-    const contactInfoFooter = `${profile?.regional ? getRegionalLabel(profile.regional) : 'TIMON-MA'} | Tel: ${profile?.phone || '(86) 99964-7573'} | ${profile?.email || 'leonelamorimm@gmail.com'}`;
-    doc.text(`Obrigado pela preferencia! | VENDAS HBN1 | ${contactInfoFooter} | Emitido em: ${new Date().toLocaleString('pt-BR')}`, 105, 290, { align: 'center' });
+    drawPDFFooterStrip(doc, profile, getRegionalLabel(selectedRegional as RegionalKey));
 
     const rName = res.client?.name || res.clientName || 'CLIENTE';
     const cleanRName = rName.split('Fornecedor:')[0]?.trim() || rName;
@@ -1822,40 +2301,55 @@ export default function ImportPanel() {
     const rawCnpj = res.cnpj || res.client?.cnpj || '';
     const cleanCnpjStr = rawCnpj.replace(/\D/g, '');
 
-    const orderDate = new Date(); // Use current date for downloaded imported files
+    const orderDate = new Date();
     const dayStr = String(orderDate.getDate()).padStart(2, '0');
     const monthStr = String(orderDate.getMonth() + 1).padStart(2, '0');
     const yearStr = String(orderDate.getFullYear());
     const hourStr = String(orderDate.getHours()).padStart(2, '0');
     const minStr = String(orderDate.getMinutes()).padStart(2, '0');
-    const secStr = String(orderDate.getSeconds()).padStart(2, '0');
 
-    const dateAndTimeStr = `${dayStr}${monthStr}${yearStr}${hourStr}${minStr}${secStr}`;
-    const formattedFilename = `${cleanRNameCleaned}${cleanCnpjStr}${dateAndTimeStr}.pdf`;
+    const dateAndTimeStr = `${dayStr}${monthStr}${yearStr}${hourStr}${minStr}`;
+    const suffix = exportFilter === 'noStock'
+      ? '_Sem_Estoque'
+      : exportFilter === 'notFound'
+      ? '_Nao_Encontrados'
+      : exportFilter === 'unavailable'
+      ? '_Indisponiveis'
+      : '';
+
+    const formattedFilename = `${cleanRNameCleaned}_${cleanCnpjStr}_${dateAndTimeStr}${suffix}.pdf`;
 
     doc.save(formattedFilename);
+    toast.success('PDF exportado com sucesso');
   };
 
-
-  const exportIndividualOrderToExcel = (clientIdx: number) => {
+  const exportIndividualOrderToExcel = async (
+    clientIdx: number,
+    exportFilter: 'all' | 'noStock' | 'notFound' | 'unavailable' = 'all'
+  ) => {
     try {
       const res = results[clientIdx];
-      const selectedItems = res.items.filter((_: any, itemIdx: number) => 
-        checkedItems.has(`${clientIdx}-${itemIdx}`)
+      if (!res) return;
+
+      const selectedItems = res.items.filter((item: any, itemIdx: number) => 
+        checkedItems.has(`${clientIdx}-${itemIdx}`) && isItemMatchingExportFilter(item, exportFilter)
       );
 
       if (selectedItems.length === 0) {
-        toast.error('Nenhum item selecionado para exportar');
+        if (exportFilter === 'noStock') toast.error('Nenhum item sem estoque encontrado neste pedido');
+        else if (exportFilter === 'notFound') toast.error('Nenhum item não encontrado neste pedido');
+        else if (exportFilter === 'unavailable') toast.error('Nenhum item indisponível neste pedido');
+        else toast.error('Nenhum item selecionado para exportar');
         return;
       }
+
+      const thumbnails = await preloadProductThumbnails(selectedItems, allProducts);
 
       const rawName = res.clientName || 'N/A';
       const cleanName = rawName.split('Fornecedor:')[0]?.trim() || rawName;
       const displayTradeName = res.client?.tradeName || cleanName;
       const displayLegalName = res.client?.name || cleanName;
-      const manufacturer = res.headerInfo?.fornecedor || 'UNILEVER';
 
-      // Financials
       let calculatedPrecoSubtotal = 0;
       let calculatedNoStock = 0;
       let calculatedDiscount = 0;
@@ -1863,183 +2357,183 @@ export default function ImportPanel() {
       selectedItems.forEach((item: any) => {
         const salePrice = item.product?.salePrice || item.price || 0;
         const finalPrice = item.product?.finalPrice || item.price || 0;
-        
-        const rowSubtotal = Math.round(finalPrice * item.quantity * 100) / 100;
-        const rowPrecoSubtotal = Math.round(salePrice * item.quantity * 100) / 100;
-        const rowDiscount = Math.round((salePrice - finalPrice) * item.quantity * 100) / 100;
+        const qty = item.quantity || 1;
+        const itemSaleSubtotal = salePrice * qty;
 
-        calculatedPrecoSubtotal += rowPrecoSubtotal;
-        calculatedDiscount += rowDiscount;
+        calculatedPrecoSubtotal += itemSaleSubtotal;
         
-        const hasStock = item.product ? item.product.stock > 0 : false;
-        if (!hasStock) {
-          calculatedNoStock += rowSubtotal;
+        const isFound = item.found !== false && item.found !== undefined ? item.found : !!item.product;
+        const hasStock = item.product ? item.product.stock > 0 : (item.status !== 'Sem estoque' && item.hasStock !== false);
+        if (!isFound || !hasStock) {
+          calculatedNoStock += itemSaleSubtotal;
+        } else {
+          calculatedDiscount += Math.max(0, (salePrice - finalPrice) * qty);
         }
       });
 
       const orderSubtotal = Math.round(calculatedPrecoSubtotal * 100) / 100;
       const orderNoStock = Math.round(calculatedNoStock * 100) / 100;
       const orderDiscount = Math.round(calculatedDiscount * 100) / 100;
-      const orderTotal = Math.round((orderSubtotal - orderNoStock - orderDiscount) * 100) / 100;
+      const orderTotal = Math.max(0, Math.round((orderSubtotal - orderNoStock - orderDiscount) * 100) / 100);
 
-      // Define Styles
-      const mainHeaderStyle: any = {
-        fill: { fgColor: { rgb: "FF6B00" } },
-        font: { color: { rgb: "FFFFFF" }, sz: 24, bold: true },
-        alignment: { horizontal: "center", vertical: "center" }
-      };
+      const workbook = new ExcelJS.Workbook();
+      const sheetName = (cleanName).replace(/[\[\]\*\?:\/\\]/g, '').substring(0, 31);
+      const worksheet = workbook.addWorksheet(sheetName || 'Pedido');
 
-      const subHeaderStyle: any = {
-        fill: { fgColor: { rgb: "FF6B00" } },
-        font: { color: { rgb: "FFFFFF" }, sz: 10 },
-        alignment: { horizontal: "center", vertical: "center" }
-      };
+      const navyColor = 'FF0F172A';
+      const orangeColor = 'FFFF6B00';
+      const whiteColor = 'FFFFFFFF';
+      const grayTextColor = 'FF64748B';
 
-      const sectionBarStyle: any = {
-        fill: { fgColor: { rgb: "FF6B00" } },
-        font: { color: { rgb: "FFFFFF" }, sz: 10, bold: true },
-        alignment: { horizontal: "center", vertical: "center" }
-      };
+      worksheet.mergeCells('A1:J2');
+      const headerCell = worksheet.getCell('A1');
 
-      const labelStyle: any = { font: { bold: true }, alignment: { horizontal: "left" } };
-      const valueStyle: any = { alignment: { horizontal: "left" } };
-      
-      const tableHeadStyle: any = {
-        fill: { fgColor: { rgb: "FF6B00" } },
-        font: { color: { rgb: "FFFFFF" }, sz: 9, bold: true },
-        alignment: { horizontal: "center", vertical: "center" },
-        border: {
-          top: { style: "thin", color: { rgb: "FFFFFF" } },
-          bottom: { style: "thin", color: { rgb: "FFFFFF" } },
-          left: { style: "thin", color: { rgb: "FFFFFF" } },
-          right: { style: "thin", color: { rgb: "FFFFFF" } }
-        }
-      };
+      const headerText = exportFilter === 'noStock'
+        ? 'VENDAS HBN1 — RELATÓRIO DE ITENS SEM ESTOQUE'
+        : exportFilter === 'notFound'
+        ? 'VENDAS HBN1 — RELATÓRIO DE ITENS NÃO ENCONTRADOS'
+        : exportFilter === 'unavailable'
+        ? 'VENDAS HBN1 — RELATÓRIO DE ITENS INDISPONÍVEIS'
+        : 'VENDAS HBN1 — COMPROVANTE DE PEDIDO (IMPORTAÇÃO)';
 
-      const cellStyle: any = { 
-        font: { sz: 8 },
-        border: {
-          top: { style: "thin", color: { rgb: "E5E7EB" } },
-          bottom: { style: "thin", color: { rgb: "E5E7EB" } },
-          left: { style: "thin", color: { rgb: "E5E7EB" } },
-          right: { style: "thin", color: { rgb: "E5E7EB" } }
-        },
-        alignment: { horizontal: "left" }
-      };
+      headerCell.value = headerText;
+      headerCell.font = { size: 16, bold: true, color: { argb: whiteColor } };
+      headerCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navyColor } };
+      headerCell.alignment = { vertical: 'middle', horizontal: 'center' };
 
-      const moneyStyle: any = { ...cellStyle, numFmt: '"R$ "#,##0.00', alignment: { horizontal: "right" } };
-      const centerStyle: any = { ...cellStyle, alignment: { horizontal: "center" } };
-      const highlightMoneyStyle: any = { ...moneyStyle, font: { ...moneyStyle.font, bold: true, color: { rgb: "FF6B00" } } };
-      const subtotalMoneyStyle: any = { ...moneyStyle, font: { ...moneyStyle.font, bold: true, color: { rgb: "C80000" } } };
+      worksheet.addRow([`${getRegionalLabel(selectedRegional as RegionalKey)} • Tel: ${profile?.phone || '(86) 99964-7573'} • ${profile?.email || 'leonelamorimm@gmail.com'}`]);
+      worksheet.mergeCells('A3:J3');
+      worksheet.getCell('A3').font = { size: 9, color: { argb: grayTextColor } };
+      worksheet.getCell('A3').alignment = { horizontal: 'center' };
 
-      const ws_data = [
-        [{ v: 'VENDAS HBN1', t: 's', s: mainHeaderStyle }, null, null, null, null, null, null, null, null],
-        [{ v: 'COMPROVANTE DE PEDIDO \u2014 IMPORTA\u00C7\u00C3O', t: 's', s: subHeaderStyle }, null, null, null, null, null, null, null, null],
-        [{ v: `${getRegionalLabel(selectedRegional as RegionalKey)} \u2022 Tel: ${profile?.phone || '(86) 99964-7573'} \u2022 ${profile?.email || 'leonelamorimm@gmail.com'}`, t: 's', s: subHeaderStyle }, null, null, null, null, null, null, null, null],
-        [{ v: `${new Date().toLocaleString('pt-BR')} \u2022 1 pedido(s)`, t: 's', s: subHeaderStyle }, null, null, null, null, null, null, null, null],
-        [],
-        [{ v: 'DADOS DO CLIENTE', t: 's', s: sectionBarStyle }, null, null, null, null, null, null, null, null],
-        [{ v: 'Nome Fantasia', t: 's', s: labelStyle }, { v: displayTradeName.toUpperCase(), t: 's', s: valueStyle }],
-        [{ v: 'ID Cliente', t: 's', s: labelStyle }, { v: res.client?.id || 'N/A', t: 's', s: valueStyle }],
-        [{ v: 'Nome', t: 's', s: labelStyle }, { v: displayLegalName.toUpperCase(), t: 's', s: valueStyle }],
-        [{ v: 'CNPJ', t: 's', s: labelStyle }, { v: res.cnpj || res.client?.cnpj || 'N/A', t: 's', s: valueStyle }],
-        [{ v: 'Vendedor', t: 's', s: labelStyle }, { v: (profile?.name || 'Leonel Amorim').toUpperCase(), t: 's', s: valueStyle }],
-        [{ v: 'Cidade/Estado', t: 's', s: labelStyle }, { v: (res.client?.city ? `${res.client.city} / ${res.client.state || 'MA'}` : 'N/A').toUpperCase(), t: 's', s: valueStyle }],
-        [],
-        [{ v: `INDÚSTRIA: ${manufacturer.toUpperCase()}`, t: 's', s: sectionBarStyle }, null, null, null, null, null, null, null, null],
-        [
-          { v: 'COD.', t: 's', s: tableHeadStyle },
-          { v: 'EAN', t: 's', s: tableHeadStyle },
-          { v: 'DESCRICAO', t: 's', s: tableHeadStyle },
-          { v: 'PRECO', t: 's', s: tableHeadStyle },
-          { v: 'DESC%', t: 's', s: tableHeadStyle },
-          { v: 'PR.FINAL', t: 's', s: tableHeadStyle },
-          { v: 'QT', t: 's', s: tableHeadStyle },
-          { v: 'SUBTOTAL', t: 's', s: tableHeadStyle },
-          { v: 'STATUS', t: 's', s: tableHeadStyle }
-        ]
+      worksheet.addRow([`${new Date().toLocaleString('pt-BR')} • ${selectedItems.length} item(ns)`]);
+      worksheet.mergeCells('A4:J4');
+      worksheet.getCell('A4').font = { size: 9, bold: true, color: { argb: orangeColor } };
+      worksheet.getCell('A4').alignment = { horizontal: 'center' };
+
+      worksheet.addRow([]);
+
+      const clientHeaderRow = worksheet.addRow(['DADOS DO CLIENTE E VENDEDOR']);
+      worksheet.mergeCells(`A6:J6`);
+      clientHeaderRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navyColor } };
+      clientHeaderRow.getCell(1).font = { bold: true, size: 10, color: { argb: whiteColor } };
+      clientHeaderRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+
+      const clientRawCnpj = res.client?.cnpj || res.cnpj;
+      const formattedCnpj = clientRawCnpj ? formatCNPJ(clientRawCnpj) : 'N/A';
+      const displayCityState = res.client?.city ? `${res.client.city} / ${res.client.state || 'PI'}`.toUpperCase() : 'N/A';
+
+      const clientRows = [
+        ['Nome Fantasia', displayTradeName.toUpperCase()],
+        ['ID Cliente', res.client?.id || 'N/A'],
+        ['Razão Social', displayLegalName.toUpperCase()],
+        ['CNPJ', formattedCnpj],
+        ['Endereço', (res.client?.address || 'N/A').toUpperCase()],
+        ['Cidade / Estado', displayCityState],
+        ['Vendedor', (profile?.name || 'LEONEL AMORIM').toUpperCase()],
+        ['E-mail / Tel', `${profile?.email || 'N/A'} • ${profile?.phone || 'N/A'}`]
       ];
 
-      selectedItems.forEach((item: any) => {
+      clientRows.forEach(r => {
+        const row = worksheet.addRow([r[0], r[1]]);
+        row.getCell(1).font = { bold: true, size: 8.5, color: { argb: 'FF475569' } };
+        row.getCell(2).font = { size: 8.5, color: { argb: 'FF0F172A' } };
+      });
+
+      worksheet.addRow([]);
+
+      const tableHeaderRow = worksheet.addRow(['FOTO', 'CÓDIGO', 'EAN', 'DESCRIÇÃO', 'PREÇO TAB.', 'DESC %', 'PREÇO LIQ.', 'QTD', 'SUBTOTAL', 'STATUS']);
+      tableHeaderRow.font = { bold: true, color: { argb: whiteColor }, size: 9 };
+      tableHeaderRow.alignment = { horizontal: 'center', vertical: 'middle' };
+      tableHeaderRow.eachCell(c => {
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: orangeColor } };
+      });
+
+      selectedItems.forEach(item => {
         const salePrice = item.product?.salePrice || item.price || 0;
         const finalPrice = item.product?.finalPrice || item.price || 0;
         const discVal = salePrice > 0 ? (1 - finalPrice / salePrice) * 100 : 0;
-        const discountStr = discVal.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
-        const hasStock = item.product ? item.product.stock > 0 : false;
-        
-        ws_data.push([
-          { v: item.product?.id || 'N/A', t: 's', s: centerStyle },
-          { v: item.ean, t: 's', s: centerStyle },
-          { v: item.description.toUpperCase(), t: 's', s: cellStyle },
-          { v: salePrice, t: 'n', s: moneyStyle },
-          { v: `${discountStr}%`, t: 's', s: centerStyle },
-          { v: finalPrice, t: 'n', s: highlightMoneyStyle },
-          { v: item.quantity, t: 'n', s: centerStyle },
-          { v: Math.round((finalPrice * item.quantity) * 100) / 100, t: 'n', s: subtotalMoneyStyle },
-          { v: hasStock ? 'OK' : 'Sem estoque', t: 's', s: { ...centerStyle, font: { color: { rgb: hasStock ? "009600" : "C80000" }, bold: !hasStock } } }
+        const qty = item.quantity || 1;
+        const rowSubtotal = Math.round(finalPrice * qty * 100) / 100;
+
+        const isFound = item.found !== false && item.found !== undefined ? item.found : !!item.product;
+        const hasStock = item.product ? item.product.stock > 0 : (item.status !== 'Sem estoque' && item.hasStock !== false);
+        const statusLabel = !isFound ? 'NÃO ENCONTRADO' : (hasStock ? 'EM ESTOQUE' : 'SEM ESTOQUE');
+
+        const row = worksheet.addRow([
+          '',
+          item.product?.id || item.code || 'N/A',
+          item.ean || 'N/A',
+          (item.description || 'SEM DESCRIÇÃO').toUpperCase(),
+          salePrice,
+          discVal / 100,
+          finalPrice,
+          qty,
+          rowSubtotal,
+          statusLabel
         ]);
+
+        row.font = { size: 8.5 };
+        row.alignment = { vertical: 'middle' };
+
+        row.getCell(2).alignment = { horizontal: 'center' };
+        row.getCell(3).alignment = { horizontal: 'center' };
+        row.getCell(4).alignment = { horizontal: 'left' };
+        row.getCell(5).numFmt = 'R$ #,##0.00';
+        row.getCell(6).numFmt = '0.0%';
+        row.getCell(7).numFmt = 'R$ #,##0.00';
+        row.getCell(8).alignment = { horizontal: 'center' };
+        row.getCell(9).numFmt = 'R$ #,##0.00';
+        row.getCell(10).alignment = { horizontal: 'center' };
+
+        const statusCell = row.getCell(10);
+        if (statusLabel === 'EM ESTOQUE') {
+          statusCell.font = { bold: true, color: { argb: 'FF16A34A' } };
+        } else if (statusLabel === 'SEM ESTOQUE') {
+          statusCell.font = { bold: true, color: { argb: 'FFEAB308' } };
+        } else {
+          statusCell.font = { bold: true, color: { argb: 'FFDC2626' } };
+        }
       });
 
-      ws_data.push([]);
-      ws_data.push([null, null, null, null, null, null, { v: 'SUBTOTAL', t: 's', s: labelStyle }, { v: orderSubtotal, t: 'n', s: moneyStyle }, null]);
-      ws_data.push([null, null, null, null, null, null, { v: 'SEM ESTOQUE', t: 's', s: { ...labelStyle, font: { ...labelStyle.font, color: { rgb: "C80000" } } } }, { v: orderNoStock, t: 'n', s: { ...moneyStyle, font: { ...moneyStyle.font, color: { rgb: "C80000" } } } }, null]);
-      ws_data.push([null, null, null, null, null, null, { v: 'DESCONTO', t: 's', s: { ...labelStyle, font: { ...labelStyle.font, color: { rgb: "009600" } } } }, { v: -orderDiscount, t: 'n', s: { ...moneyStyle, font: { ...moneyStyle.font, color: { rgb: "009600" } } } }, null]);
-      ws_data.push([null, null, null, null, null, null, { v: 'TOTAL', t: 's', s: { ...labelStyle, font: { ...labelStyle.font, sz: 12, color: { rgb: "003264" }, bold: true } } }, { v: orderTotal, t: 'n', s: { ...moneyStyle, font: { ...moneyStyle.font, sz: 12, color: { rgb: "003264" }, bold: true } } }, null]);
+      worksheet.addRow([]);
 
-      const ws = XLSXStyle.utils.aoa_to_sheet(ws_data);
+      const summaryRow = worksheet.addRow(['SUBTOTAL', formatCurrency(orderSubtotal)]);
+      summaryRow.font = { bold: true, size: 9 };
+      const noStockRow = worksheet.addRow(['SEM ESTOQUE / INDISP.', formatCurrency(orderNoStock)]);
+      noStockRow.font = { bold: true, color: { argb: 'FFDC2626' }, size: 9 };
+      const discRow = worksheet.addRow(['DESCONTO TOTAL', formatCurrency(orderDiscount)]);
+      discRow.font = { bold: true, color: { argb: 'FF16A34A' }, size: 9 };
+      const totalRow = worksheet.addRow(['TOTAL LÍQUIDO', formatCurrency(orderTotal)]);
+      totalRow.font = { bold: true, size: 11, color: { argb: orangeColor } };
 
-      // Merges
-      ws['!merges'] = [
-        { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }, // Header
-        { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } },
-        { s: { r: 2, c: 0 }, e: { r: 2, c: 8 } },
-        { s: { r: 3, c: 0 }, e: { r: 3, c: 8 } },
-        { s: { r: 5, c: 0 }, e: { r: 5, c: 8 } }, // Dados cliente bar
-        { s: { r: 13, c: 0 }, e: { r: 13, c: 8 } } // Fabricante bar
-      ];
+      worksheet.columns.forEach((col, i) => {
+        if (i === 0) col.width = 10;
+        else if (i === 3) col.width = 40;
+        else col.width = 16;
+      });
 
-      ws['!cols'] = [
-        { wch: 10 }, { wch: 15 }, { wch: 45 }, { wch: 12 }, { wch: 8 }, 
-        { wch: 12 }, { wch: 8 }, { wch: 15 }, { wch: 15 }
-      ];
-
-      const wb = XLSXStyle.utils.book_new();
-      const sheetName = (cleanName).replace(/[\[\]\*\?:\/\\]/g, '').substring(0, 31);
-      XLSXStyle.utils.book_append_sheet(wb, ws, sheetName);
-      
-      const wbout = XLSXStyle.write(wb, { bookType: 'xlsx', type: 'array' });
-      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = window.URL.createObjectURL(blob);
-      const rName = res.client?.name || res.clientName || 'CLIENTE';
-      const cleanRName = rName.split('Fornecedor:')[0]?.trim() || rName;
-      const cleanRNameCleaned = cleanRName
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-zA-Z0-9]/g, '')
-        .toUpperCase();
-
-      const rawCnpj = res.cnpj || res.client?.cnpj || '';
-      const cleanCnpjStr = rawCnpj.replace(/\D/g, '');
-
-      const orderDate = new Date(); // Use current date for downloaded imported files
-      const dayStr = String(orderDate.getDate()).padStart(2, '0');
-      const monthStr = String(orderDate.getMonth() + 1).padStart(2, '0');
-      const yearStr = String(orderDate.getFullYear());
-      const hourStr = String(orderDate.getHours()).padStart(2, '0');
-      const minStr = String(orderDate.getMinutes()).padStart(2, '0');
-      const secStr = String(orderDate.getSeconds()).padStart(2, '0');
-
-      const dateAndTimeStr = `${dayStr}${monthStr}${yearStr}${hourStr}${minStr}${secStr}`;
-      const formattedFilename = `${cleanRNameCleaned}${cleanCnpjStr}${dateAndTimeStr}.xlsx`;
-
       const a = document.createElement('a');
       a.href = url;
-      a.download = formattedFilename;
+
+      const cleanFileName = cleanName.replace(/[^a-zA-Z0-9]/g, '_');
+      const suffix = exportFilter === 'noStock'
+        ? '_Sem_Estoque'
+        : exportFilter === 'notFound'
+        ? '_Nao_Encontrados'
+        : exportFilter === 'unavailable'
+        ? '_Indisponiveis'
+        : '';
+
+      a.download = `Pedido_${cleanFileName}${suffix}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
-      
+
       toast.success('Excel exportado com sucesso');
     } catch (error) {
       console.error('Excel export error:', error);
@@ -2047,81 +2541,84 @@ export default function ImportPanel() {
     }
   };
 
-  const exportAllOrdersToPDF = () => {
+  const exportAllOrdersToPDF = async (
+    exportFilter: 'all' | 'noStock' | 'notFound' | 'unavailable' = 'all'
+  ) => {
     const doc = new jsPDF();
-    const ordersToExport = results.filter((res, cIdx) => 
-      res.items.some((_: any, iIdx: number) => checkedItems.has(`${cIdx}-${iIdx}`))
-    );
+
+    const ordersToExport = results.map((res, cIdx) => {
+      const items = res.items.filter((item: any, iIdx: number) => 
+        checkedItems.has(`${cIdx}-${iIdx}`) && isItemMatchingExportFilter(item, exportFilter)
+      );
+      return { ...res, originalIndex: cIdx, filteredItems: items };
+    }).filter(res => res.filteredItems.length > 0);
 
     if (ordersToExport.length === 0) {
-      toast.error('Nenhum item selecionado para exportar');
+      if (exportFilter === 'noStock') toast.error('Nenhum item sem estoque para exportar');
+      else if (exportFilter === 'notFound') toast.error('Nenhum item não encontrado para exportar');
+      else if (exportFilter === 'unavailable') toast.error('Nenhum item indisponível para exportar');
+      else toast.error('Nenhum item selecionado para exportar');
       return;
     }
 
-    const totalOrders = ordersToExport.length;
-    let currentOrderNum = 1;
-
-    // Common drawing functions defined inside for access to doc
-    const drawHeader = (d: jsPDF, pageNum: number, total: number, clientCode: string) => {
-      d.setFillColor(255, 107, 0);
-      d.rect(14, 15, 182, 35, 'F');
-      d.setFontSize(24);
-      d.setTextColor(255, 255, 255);
-      d.setFont('helvetica', 'bold');
-      d.text('VENDAS HBN1', 105, 30, { align: 'center' });
-      d.setFontSize(10);
-      d.setFont('helvetica', 'normal');
-      d.text('COMPROVANTE DE PEDIDO \u2014 IMPORTA\u00C7\u00C3O', 105, 38, { align: 'center' });
-      const region = getRegionalLabel(selectedRegional as RegionalKey);
-      d.setFontSize(8);
-      const contactInfoHead = `${region} \u2022 Tel: ${profile?.phone || '(86) 99964-7573'} \u2022 ${profile?.email || 'leonelamorimm@gmail.com'}`;
-      d.text(contactInfoHead, 105, 43, { align: 'center' });
-      d.text(`${new Date().toLocaleString('pt-BR')} \u2022 ${total} pedido(s)`, 105, 48, { align: 'center' });
-    };
-
-    const drawClientData = (d: jsPDF, y: number, r: any) => {
-      d.setFillColor(255, 107, 0);
-      d.rect(14, y, 182, 6, 'F');
-      d.setFontSize(8);
-      d.setTextColor(255, 255, 255);
-      d.setFont('helvetica', 'bold');
-      d.text('DADOS DO CLIENTE', 105, y + 4.5, { align: 'center' });
-      y += 10;
-      d.setTextColor(0, 0, 0);
-
-      const rawName = r.clientName || 'N/A';
-      const cleanName = rawName.split('Fornecedor:')[0]?.trim() || rawName;
-      const displayTradeName = r.client?.tradeName || cleanName;
-      const displayLegalName = r.client?.name || cleanName;
-
-      const labels = ['Nome Fantasia', 'ID Cliente', 'Nome', 'CNPJ', 'Vendedor', 'Cidade/Estado'];
-      const values = [
-        displayTradeName.toUpperCase(),
-        r.client?.id || 'N/A',
-        displayLegalName.toUpperCase(),
-        r.cnpj || r.client?.cnpj || 'Não informado',
-        (profile?.name || 'Leonel Amorim').toUpperCase(),
-        (r.client?.city ? `${r.client.city} / ${r.client.state || 'MA'}` : 'N/A').toUpperCase()
-      ];
-      labels.forEach((label, i) => {
-        d.setFont('helvetica', 'bold');
-        d.text(label, 18, y + (i * 5));
-        d.setFont('helvetica', 'normal');
-        d.text(String(values[i]), 50, y + (i * 5));
+    const allSelectedItems: any[] = [];
+    ordersToExport.forEach(res => {
+      res.filteredItems.forEach((item: any) => {
+        allSelectedItems.push(item);
       });
-      return y + (labels.length * 5) + 5;
-    };
+    });
+
+    const thumbnails = await preloadProductThumbnails(allSelectedItems, allProducts);
+
+    const subtitleText = exportFilter === 'noStock'
+      ? 'RELATÓRIO DE ITENS SEM ESTOQUE'
+      : exportFilter === 'notFound'
+      ? 'RELATÓRIO DE ITENS NÃO ENCONTRADOS'
+      : exportFilter === 'unavailable'
+      ? 'RELATÓRIO DE ITENS INDISPONÍVEIS'
+      : 'COMPROVANTE DE PEDIDO';
 
     ordersToExport.forEach((res, idx) => {
       if (idx > 0) doc.addPage();
       
-      const clientCode = res.headerInfo?.cotacao || res.client?.id?.substring(0, 5) || String(30214 + idx);
-      drawHeader(doc, currentOrderNum, totalOrders, clientCode);
-      let nextY = drawClientData(doc, 55, res);
+      const rawCode = res.headerInfo?.cotacao || res.client?.id || '';
+      const digitsOnly = rawCode.replace(/\D/g, '');
+      const clientCode = digitsOnly.length >= 5 ? digitsOnly : `17853503591${14 + idx}`;
+      drawPDFHeader(doc, {
+        subtitle: subtitleText,
+        orderNumber: `PED${clientCode}`,
+        dateTimeStr: new Date().toLocaleString('pt-BR'),
+        regionStr: getRegionalLabel(selectedRegional as RegionalKey) || 'TERESINA - PI',
+        phoneStr: profile?.phone || '(86) 99964-7573',
+        sellerStr: profile?.name || 'LEONEL'
+      });
+
+      const rawName = res.clientName || 'N/A';
+      const cleanName = rawName.split('Fornecedor:')[0]?.trim() || rawName;
+      const displayTradeName = res.client?.tradeName || cleanName;
+      const displayLegalName = res.client?.name || cleanName;
+
+      const clientRawCnpj = res.client?.cnpj || res.cnpj;
+      const formattedCnpj = clientRawCnpj ? formatCNPJ(clientRawCnpj) : 'N/A';
+      const displayAddress = res.client?.address ? res.client.address.toUpperCase() : 'N/A';
+      const displayCityState = res.client?.city ? `${res.client.city} / ${res.client.state || 'PI'}`.toUpperCase() : 'N/A';
+
+      const clientFields = [
+        { icon: 'user', label: 'Cliente', value: displayTradeName.toUpperCase() },
+        { icon: 'user', label: 'Vendedor', value: (profile?.name || 'LEONEL AMORIM').toUpperCase() },
+        { icon: 'id', label: 'ID Cliente', value: res.client?.id || 'N/A' },
+        { icon: 'email', label: 'E-mail', value: (res.client?.email || profile?.email || 'N/A').toUpperCase() },
+        { icon: 'user', label: 'Nome', value: displayLegalName.toUpperCase() },
+        { icon: 'mapPin', label: 'Endereço', value: displayAddress },
+        { icon: 'building', label: 'CNPJ', value: formattedCnpj },
+        { icon: 'mapPin', label: 'Cidade/Estado', value: displayCityState },
+        { icon: 'phone', label: 'Celular', value: res.client?.phone || '-' }
+      ];
+
+      let nextY = drawClientDataCard(doc, 42, clientFields);
       const manufacturer = res.headerInfo?.fornecedor || 'UNILEVER';
 
-      const resIdx = results.indexOf(res);
-      const selectedItems = res.items.filter((_: any, iIdx: number) => checkedItems.has(`${resIdx}-${iIdx}`));
+      const selectedItems = res.filteredItems;
       let orderPrecoSubtotalAcc = 0;
       let orderNoStockAcc = 0;
       let orderDiscountAcc = 0;
@@ -2130,257 +2627,272 @@ export default function ImportPanel() {
         const salePrice = item.product?.salePrice || item.price || 0;
         const finalPrice = item.product?.finalPrice || item.price || 0;
         const discVal = salePrice > 0 ? (1 - finalPrice / salePrice) * 100 : 0;
-        const discountStr = discVal.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
-        const hasStock = item.product ? item.product.stock > 0 : false;
-        
-        const rowSubtotal = Math.round(finalPrice * item.quantity * 100) / 100;
-        const rowPrecoSubtotal = Math.round(salePrice * item.quantity * 100) / 100;
-        const rowDiscount = Math.round((salePrice - finalPrice) * item.quantity * 100) / 100;
+        const discountStr = discVal > 0 ? `${discVal.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%` : '-';
+        const qty = item.quantity || 1;
+        const itemSaleSubtotal = salePrice * qty;
 
-        orderPrecoSubtotalAcc += rowPrecoSubtotal;
-        orderDiscountAcc += rowDiscount;
-        if (!hasStock) {
-          orderNoStockAcc += rowSubtotal;
+        const isFound = item.found !== false && item.found !== undefined ? item.found : !!item.product;
+        const hasStock = item.product ? item.product.stock > 0 : (item.status !== 'Sem estoque' && item.hasStock !== false);
+
+        orderPrecoSubtotalAcc += itemSaleSubtotal;
+        if (!isFound || !hasStock) {
+          orderNoStockAcc += itemSaleSubtotal;
+        } else {
+          orderDiscountAcc += Math.max(0, (salePrice - finalPrice) * qty);
         }
+
+        const rowSubtotal = Math.round(finalPrice * qty * 100) / 100;
+        const statusLabel = !isFound ? 'Não encontrado' : (hasStock ? '✔ OK' : 'Sem estoque');
 
         return [
-          item.product?.id || 'N/A',
-          item.ean,
-          item.description.toUpperCase(),
+          '',
+          item.product?.id || item.code || 'N/A',
+          item.ean || 'N/A',
+          (item.description || 'SEM DESCRIÇÃO').toUpperCase(),
           formatCurrency(salePrice),
-          `${discountStr}%`,
+          discountStr,
           formatCurrency(finalPrice),
-          item.quantity,
+          item.quantity || 1,
           formatCurrency(rowSubtotal),
-          hasStock ? 'OK' : 'Sem estoque'
+          statusLabel
         ];
-      });
-
-      autoTable(doc, {
-        startY: nextY,
-        head: [
-          [{ content: `INDÚSTRIA: ${manufacturer.toUpperCase()}`, colSpan: 9, styles: { halign: 'center', fillColor: [255, 107, 0], textColor: 255, fontSize: 9, fontStyle: 'bold' } }],
-          ['COD.', 'EAN', 'DESCRICAO', 'PRECO', 'DESC%', 'PR.FINAL', 'QT', 'SUBTOTAL', 'STATUS']
-        ],
-        body: tableData,
-        theme: 'grid',
-        headStyles: { fillColor: [255, 107, 0], textColor: 255, fontSize: 7, fontStyle: 'bold', halign: 'center' },
-        styles: { fontSize: 7, cellPadding: 1.5, overflow: 'linebreak' },
-        columnStyles: {
-          0: { halign: 'center', cellWidth: 18 },
-          1: { halign: 'center', cellWidth: 24 },
-          2: { halign: 'left', cellWidth: 'auto' },
-          3: { halign: 'right', cellWidth: 18 },
-          4: { halign: 'center', cellWidth: 15 },
-          5: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 18 },
-          6: { halign: 'center', cellWidth: 10 },
-          7: { halign: 'right', fontStyle: 'bold', textColor: [200, 0, 0], cellWidth: 22 },
-          8: { halign: 'center', cellWidth: 20 }
-        },
-        didParseCell: (data) => {
-          if (data.section === 'body' && data.column.index === 8) {
-            if (data.cell.text[0] === 'OK') data.cell.styles.textColor = [0, 150, 0];
-            else { data.cell.styles.textColor = [200, 0, 0]; data.cell.styles.fontStyle = 'bold'; }
-          }
-        }
       });
 
       const orderSubtotal = Math.round(orderPrecoSubtotalAcc * 100) / 100;
       const orderNoStock = Math.round(orderNoStockAcc * 100) / 100;
       const orderDiscount = Math.round(orderDiscountAcc * 100) / 100;
-      const orderTotal = Math.round((orderSubtotal - orderNoStock - orderDiscount) * 100) / 100;
+      const orderTotal = Math.max(0, Math.round((orderSubtotal - orderNoStock - orderDiscount) * 100) / 100);
 
-      const currentY = (doc as any).lastAutoTable.finalY + 5;
-      doc.setFontSize(9);
-      doc.setFont('helvetica', 'bold');
-      doc.setTextColor(100, 100, 100);
-      doc.text('SUBTOTAL', 160, currentY, { align: 'right' });
-      doc.text(formatCurrency(orderSubtotal), 196, currentY, { align: 'right' });
-      doc.setTextColor(200, 0, 0);
-      doc.text('SEM ESTOQUE', 160, currentY + 6, { align: 'right' });
-      doc.text(formatCurrency(orderNoStock), 196, currentY + 6, { align: 'right' });
-      doc.setTextColor(0, 150, 0);
-      doc.text('DESCONTO', 160, currentY + 12, { align: 'right' });
-      doc.text(`-${formatCurrency(orderDiscount)}`, 196, currentY + 12, { align: 'right' });
-      doc.setFillColor(240, 240, 240);
-      doc.rect(140, currentY + 15, 60, 8, 'F');
-      doc.setFontSize(11);
-      doc.setTextColor(0, 50, 100);
-      doc.text('TOTAL', 160, currentY + 21, { align: 'right' });
-      doc.text(formatCurrency(orderTotal), 196, currentY + 21, { align: 'right' });
+      autoTable(doc, {
+        startY: nextY,
+        head: [
+          [{ content: `INDÚSTRIA: ${manufacturer.toUpperCase()}`, colSpan: 10, styles: { halign: 'center', fillColor: [15, 23, 42], textColor: [255, 255, 255], fontSize: 9, fontStyle: 'bold', cellPadding: { top: 3, bottom: 3 } } }],
+          ['FOTO', 'COD.', 'EAN', 'DESCRICAO', 'PRECO', 'DESC %', 'PR. FINAL', 'QT', 'SUBTOTAL', 'STATUS']
+        ],
+        body: tableData,
+        theme: 'grid',
+        headStyles: { 
+          fillColor: [255, 107, 0],
+          textColor: [255, 255, 255], 
+          fontSize: 7.5, 
+          fontStyle: 'bold', 
+          halign: 'center',
+          valign: 'middle',
+          cellPadding: { top: 2.5, bottom: 2.5, left: 1, right: 1 }
+        },
+        bodyStyles: { fontSize: 7, halign: 'center', valign: 'middle', textColor: [15, 23, 42], minCellHeight: 12 },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        tableLineColor: [226, 232, 240],
+        tableLineWidth: 0.2,
+        columnStyles: {
+          0: { halign: 'center', cellWidth: 14 },
+          1: { halign: 'center', cellWidth: 14 },
+          2: { halign: 'center', cellWidth: 22 },
+          3: { halign: 'left', cellWidth: 'auto' },
+          4: { halign: 'right', textColor: [100, 116, 139], cellWidth: 16 },
+          5: { halign: 'center', fontStyle: 'bold', textColor: [22, 163, 74], cellWidth: 15 },
+          6: { halign: 'right', fontStyle: 'bold', textColor: [15, 23, 42], cellWidth: 16 },
+          7: { halign: 'center', cellWidth: 10 },
+          8: { halign: 'right', fontStyle: 'bold', textColor: [255, 107, 0], cellWidth: 18 },
+          9: { halign: 'center', cellWidth: 18 }
+        },
+        didParseCell: (data) => {
+          if (data.section === 'body' && data.column.index === 9) {
+            const rawVal = String(data.cell.raw || '');
+            if (rawVal.toLowerCase().includes('não encontrado')) {
+              data.cell.styles.textColor = [220, 38, 38];
+              data.cell.styles.fontStyle = 'bold';
+            } else if (rawVal.toLowerCase().includes('sem estoque')) {
+              data.cell.styles.textColor = [234, 88, 12];
+              data.cell.styles.fontStyle = 'bold';
+            } else {
+              data.cell.styles.textColor = [22, 163, 74];
+              data.cell.styles.fontStyle = 'bold';
+            }
+          }
+        },
+        didDrawCell: (data) => {
+          if (data.section === 'body' && data.column.index === 0) {
+            const item = selectedItems[data.row.index];
+            if (item) {
+              const keyCandidates = [
+                item.product?.id ? String(item.product.id).trim() : '',
+                item.id ? String(item.id).trim() : '',
+                item.product?.ean ? String(item.product.ean).trim() : '',
+                item.ean ? String(item.ean).trim() : '',
+                item.code ? String(item.code).trim() : '',
+                item.description ? String(item.description).trim() : '',
+                item.product?.description ? String(item.product.description).trim() : '',
+                String(item.product?.id || item.id || item.ean || item.code || item.description || '')
+              ];
+              let imgData: string | null = null;
+              for (const k of keyCandidates) {
+                if (k && thumbnails[k]) {
+                  imgData = thumbnails[k];
+                  break;
+                }
+              }
 
-      currentOrderNum++;
-    });
-
-    // Final Global Summary Page
-    doc.addPage();
-    const finalGlobalY = 40;
-    doc.setFillColor(255, 107, 0);
-    doc.rect(14, finalGlobalY, 182, 10, 'F');
-    doc.setFontSize(14);
-    doc.setTextColor(255, 255, 255);
-    doc.setFont('helvetica', 'bold');
-    doc.text(`TOTAL GERAL \u2014 ${totalOrders} PEDIDO(S)`, 105, finalGlobalY + 7, { align: 'center' });
-
-    let summaryY = finalGlobalY + 25;
-    doc.setFontSize(12);
-    doc.setFont('helvetica', 'bold');
-    doc.setTextColor(100, 100, 100);
-    
-    // Calculate global stats correctly
-    let globalPrecoSubtotal = 0;
-    let globalNoStock = 0;
-    let globalDiscount = 0;
-    ordersToExport.forEach(res => {
-      const selectedItems = res.items.filter((_: any, iIdx: number) => checkedItems.has(`${results.indexOf(res)}-${iIdx}`));
-      selectedItems.forEach(item => {
-        const salePrice = item.product?.salePrice || item.price || 0;
-        const finalPrice = item.product?.finalPrice || item.price || 0;
-        
-        const rowSubtotal = Math.round(finalPrice * item.quantity * 100) / 100;
-        const rowPrecoSubtotal = Math.round(salePrice * item.quantity * 100) / 100;
-        const rowDiscount = Math.round((salePrice - finalPrice) * item.quantity * 100) / 100;
-
-        globalPrecoSubtotal += rowPrecoSubtotal;
-        globalDiscount += rowDiscount;
-        
-        const hasStock = item.product ? item.product.stock > 0 : false;
-        if (!hasStock) globalNoStock += rowSubtotal;
+              if (imgData) {
+                try {
+                  doc.setFillColor(255, 255, 255);
+                  doc.setDrawColor(226, 232, 240);
+                  doc.roundedRect(data.cell.x + 1.5, data.cell.y + 1, 11, 10, 0.5, 0.5, 'FD');
+                  const imgFormat = imgData.startsWith('data:image/png') ? 'PNG' : 'JPEG';
+                  doc.addImage(imgData, imgFormat, data.cell.x + 2, data.cell.y + 1.5, 10, 9, undefined, 'FAST');
+                } catch (e) {
+                  // ignore
+                }
+              }
+            }
+          }
+        },
+        margin: { left: 14, right: 14 }
       });
+
+      nextY = (doc as any).lastAutoTable.finalY + 3;
+      nextY = drawBottomSummaryCards(
+        doc,
+        nextY,
+        {
+          subtotal: orderSubtotal,
+          discount: orderDiscount,
+          noStock: orderNoStock,
+          finalTotal: orderTotal
+        },
+        {
+          title: `Resumo - INDÚSTRIA: ${manufacturer.toUpperCase()}`,
+          totalLabel: `TOTAL INDÚSTRIA (${manufacturer.toUpperCase()})`
+        }
+      );
+      nextY += 4;
     });
-    const globalSubtotalRounded = Math.round(globalPrecoSubtotal * 100) / 100;
-    const globalNoStockRounded = Math.round(globalNoStock * 100) / 100;
-    const globalDiscountRounded = Math.round(globalDiscount * 100) / 100;
-    const globalTotal = Math.round((globalSubtotalRounded - globalNoStockRounded - globalDiscountRounded) * 100) / 100;
 
-    doc.text('SUBTOTAL', 100, summaryY, { align: 'right' });
-    doc.text(formatCurrency(globalSubtotalRounded), 150, summaryY, { align: 'right' });
-    
-    doc.setTextColor(200, 0, 0);
-    doc.text('SEM ESTOQUE', 100, summaryY + 10, { align: 'right' });
-    doc.text(formatCurrency(globalNoStockRounded), 150, summaryY + 10, { align: 'right' });
-    
-    doc.setTextColor(0, 150, 0);
-    doc.text('DESCONTO', 100, summaryY + 20, { align: 'right' });
-    doc.text(`-${formatCurrency(globalDiscountRounded)}`, 150, summaryY + 20, { align: 'right' });
-    
-    doc.setFillColor(255, 107, 0);
-    doc.rect(50, summaryY + 28, 110, 12, 'F');
-    doc.setFontSize(14);
-    doc.setTextColor(255, 255, 255);
-    doc.text('TOTAL GERAL DOS PEDIDOS', 100, summaryY + 36, { align: 'right' });
-    doc.text(formatCurrency(globalTotal), 155, summaryY + 36, { align: 'right' });
+    drawPDFFooterStrip(doc, profile, getRegionalLabel(selectedRegional as RegionalKey));
 
-    // Footer for all pages
-    const pageCount = doc.getNumberOfPages();
-    for (let i = 1; i <= pageCount; i++) {
-        doc.setPage(i);
-        doc.setFontSize(8);
-        doc.setTextColor(150, 150, 150);
-        const contactFooterAll = `${profile?.regional ? getRegionalLabel(profile.regional) : 'TIMON-MA'} | Tel: ${profile?.phone || '(86) 99964-7573'} | ${profile?.email || 'leonelamorimm@gmail.com'}`;
-        doc.text(`Obrigado pela preferencia! | VENDAS HBN1 | ${contactFooterAll} | Emitido em: ${new Date().toLocaleString('pt-BR')}`, 105, 290, { align: 'center' });
-    }
+    const fileName = exportFilter === 'noStock'
+      ? 'Relatorio_Itens_Sem_Estoque.pdf'
+      : exportFilter === 'notFound'
+      ? 'Relatorio_Itens_Nao_Encontrados.pdf'
+      : exportFilter === 'unavailable'
+      ? 'Relatorio_Itens_Indisponiveis.pdf'
+      : 'Relatorio_Importacao_Compilado.pdf';
 
-    doc.save('Relatorio_Importacao_Compilado.pdf');
+    doc.save(fileName);
+    toast.success('PDF exportado com sucesso');
   };
 
-  const exportAllOrdersToExcel = () => {
+  const exportAllOrdersToExcel = async (
+    exportFilter: 'all' | 'noStock' | 'notFound' | 'unavailable' = 'all'
+  ) => {
     try {
-      const ordersToExport = results.filter((res, cIdx) => 
-        res.items.some((_: any, iIdx: number) => checkedItems.has(`${cIdx}-${iIdx}`))
-      );
+      const ordersToExport = results.map((res, cIdx) => {
+        const items = res.items.filter((item: any, iIdx: number) => 
+          checkedItems.has(`${cIdx}-${iIdx}`) && isItemMatchingExportFilter(item, exportFilter)
+        );
+        return { ...res, originalIndex: cIdx, filteredItems: items };
+      }).filter(res => res.filteredItems.length > 0);
 
       if (ordersToExport.length === 0) {
-        toast.error('Nenhum item selecionado para exportar');
+        if (exportFilter === 'noStock') toast.error('Nenhum item sem estoque para exportar');
+        else if (exportFilter === 'notFound') toast.error('Nenhum item não encontrado para exportar');
+        else if (exportFilter === 'unavailable') toast.error('Nenhum item indisponível para exportar');
+        else toast.error('Nenhum item selecionado para exportar');
         return;
       }
 
-      // Define Styles
-      const mainHeaderStyle: any = {
-        fill: { fgColor: { rgb: "FF6B00" } },
-        font: { color: { rgb: "FFFFFF" }, sz: 20, bold: true },
-        alignment: { horizontal: "center", vertical: "center" }
-      };
+      const allSelectedItems: any[] = [];
+      ordersToExport.forEach(res => {
+        res.filteredItems.forEach((item: any) => {
+          allSelectedItems.push(item);
+        });
+      });
 
-      const subHeaderStyle: any = {
-        fill: { fgColor: { rgb: "FF6B00" } },
-        font: { color: { rgb: "FFFFFF" }, sz: 10 },
-        alignment: { horizontal: "center", vertical: "center" }
-      };
+      const thumbnails = await preloadProductThumbnails(allSelectedItems, allProducts);
 
-      const sectionBarStyle: any = {
-        fill: { fgColor: { rgb: "FF6B00" } },
-        font: { color: { rgb: "FFFFFF" }, sz: 10, bold: true },
-        alignment: { horizontal: "center", vertical: "center" }
-      };
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Relatório Consolidado');
 
-      const labelStyle: any = { font: { bold: true }, alignment: { horizontal: "left" } };
-      const valueStyle: any = { alignment: { horizontal: "left" } };
-      
-      const tableHeadStyle: any = {
-        fill: { fgColor: { rgb: "FF6B00" } },
-        font: { color: { rgb: "FFFFFF" }, sz: 9, bold: true },
-        alignment: { horizontal: "center", vertical: "center" }
-      };
+      const navyColor = 'FF0F172A';
+      const orangeColor = 'FFFF6B00';
+      const whiteColor = 'FFFFFFFF';
+      const lightSlateBg = 'FFF8FAFC';
 
-      const cellStyle: any = { font: { sz: 8 }, alignment: { horizontal: "left" } };
-      const moneyStyle: any = { ...cellStyle, numFmt: '"R$ "#,##0.00', alignment: { horizontal: "right" } };
-      const centerStyle: any = { ...cellStyle, alignment: { horizontal: "center" } };
-      const highlightMoneyStyle: any = { ...moneyStyle, font: { ...moneyStyle.font, bold: true, color: { rgb: "FF6B00" } } };
-      const subtotalMoneyStyle: any = { ...moneyStyle, font: { ...moneyStyle.font, bold: true, color: { rgb: "C80000" } } };
+      worksheet.mergeCells('A1:J2');
+      const headerCell = worksheet.getCell('A1');
 
-      const ws_data: any[] = [
-        [{ v: 'VENDAS HBN1', t: 's', s: mainHeaderStyle }, null, null, null, null, null, null, null, null],
-        [{ v: 'COMPROVANTE DE PEDIDO \u2014 IMPORTA\u00C7\u00C3O', t: 's', s: subHeaderStyle }, null, null, null, null, null, null, null, null],
-        [{ v: `${getRegionalLabel(selectedRegional as RegionalKey)} \u2022 Tel: ${profile?.phone || '(86) 99964-7573'} \u2022 ${profile?.email || 'leonelamorimm@gmail.com'}`, t: 's', s: subHeaderStyle }, null, null, null, null, null, null, null, null],
-        [{ v: `${new Date().toLocaleString('pt-BR')} \u2022 ${ordersToExport.length} pedido(s)`, t: 's', s: subHeaderStyle }, null, null, null, null, null, null, null, null],
-        []
-      ];
+      const headerTitle = exportFilter === 'noStock'
+        ? 'VENDAS HBN1 — RELATÓRIO DE ITENS SEM ESTOQUE'
+        : exportFilter === 'notFound'
+        ? 'VENDAS HBN1 — RELATÓRIO DE ITENS NÃO ENCONTRADOS'
+        : exportFilter === 'unavailable'
+        ? 'VENDAS HBN1 — RELATÓRIO DE ITENS INDISPONÍVEIS'
+        : 'VENDAS HBN1 — RELATÓRIO DE IMPORTAÇÃO DE PEDIDOS';
 
-      const merges: any[] = [
-        { s: { r: 0, c: 0 }, e: { r: 0, c: 8 } },
-        { s: { r: 1, c: 0 }, e: { r: 1, c: 8 } },
-        { s: { r: 2, c: 0 }, e: { r: 2, c: 8 } },
-        { s: { r: 3, c: 0 }, e: { r: 3, c: 8 } }
-      ];
+      headerCell.value = headerTitle;
+      headerCell.font = { size: 16, bold: true, color: { argb: whiteColor } };
+      headerCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navyColor } };
+      headerCell.alignment = { vertical: 'middle', horizontal: 'center' };
 
-      ordersToExport.forEach((res, cIdx) => {
-        const startRow = ws_data.length;
-        const resIdxInResults = results.indexOf(res);
-        const selectedItems = res.items.filter((_: any, iIdx: number) => 
-          checkedItems.has(`${resIdxInResults}-${iIdx}`)
-        );
+      worksheet.addRow([`${getRegionalLabel(selectedRegional as RegionalKey)} • Tel: ${profile?.phone || '(86) 99964-7573'} • ${profile?.email || 'leonelamorimm@gmail.com'}`]);
+      worksheet.mergeCells('A3:J3');
+      worksheet.getCell('A3').font = { size: 9, bold: true, color: { argb: whiteColor } };
+      worksheet.getCell('A3').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: orangeColor } };
+      worksheet.getCell('A3').alignment = { horizontal: 'center', vertical: 'middle' };
 
+      worksheet.addRow([`${new Date().toLocaleString('pt-BR')} • ${ordersToExport.length} pedido(s) • ${allSelectedItems.length} item(ns)`]);
+      worksheet.mergeCells('A4:J4');
+      worksheet.getCell('A4').font = { size: 9, bold: true, color: { argb: orangeColor } };
+      worksheet.getCell('A4').alignment = { horizontal: 'center' };
+
+      worksheet.addRow([]);
+
+      ordersToExport.forEach((res) => {
+        const selectedItems = res.filteredItems;
         const manufacturer = res.headerInfo?.fornecedor || 'UNILEVER';
         const rawName = res.clientName || 'N/A';
         const cleanName = rawName.split('Fornecedor:')[0]?.trim() || rawName;
         const displayTradeName = res.client?.tradeName || cleanName;
         const displayLegalName = res.client?.name || cleanName;
 
-        ws_data.push([{ v: 'DADOS DO CLIENTE', t: 's', s: sectionBarStyle }, null, null, null, null, null, null, null, null]);
-        merges.push({ s: { r: startRow, c: 0 }, e: { r: startRow, c: 8 } });
+        const cRow = worksheet.addRow(['DADOS DO CLIENTE E VENDEDOR']);
+        worksheet.mergeCells(`A${cRow.number}:J${cRow.number}`);
+        cRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navyColor } };
+        cRow.getCell(1).font = { bold: true, size: 10, color: { argb: whiteColor } };
+        cRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
 
-        ws_data.push([{ v: 'Nome Fantasia', t: 's', s: labelStyle }, { v: displayTradeName.toUpperCase(), t: 's', s: valueStyle }]);
-        ws_data.push([{ v: 'ID Cliente', t: 's', s: labelStyle }, { v: res.client?.id || 'N/A', t: 's', s: valueStyle }]);
-        ws_data.push([{ v: 'Nome', t: 's', s: labelStyle }, { v: displayLegalName.toUpperCase(), t: 's', s: valueStyle }]);
-        ws_data.push([{ v: 'CNPJ', t: 's', s: labelStyle }, { v: res.cnpj || res.client?.cnpj || 'N/A', t: 's', s: valueStyle }]);
-        ws_data.push([{ v: 'Vendedor', t: 's', s: labelStyle }, { v: (profile?.name || 'Leonel Amorim').toUpperCase(), t: 's', s: valueStyle }]);
-        ws_data.push([{ v: 'Cidade/Estado', t: 's', s: labelStyle }, { v: (res.client?.city ? `${res.client.city} / ${res.client.state || 'MA'}` : 'N/A').toUpperCase(), t: 's', s: valueStyle }]);
-        
-        ws_data.push([{ v: `INDÚSTRIA: ${manufacturer.toUpperCase()}`, t: 's', s: sectionBarStyle }, null, null, null, null, null, null, null, null]);
-        merges.push({ s: { r: ws_data.length - 1, c: 0 }, e: { r: ws_data.length - 1, c: 8 } });
+        const clientRawCnpj = res.client?.cnpj || res.cnpj;
+        const formattedCnpj = clientRawCnpj ? formatCNPJ(clientRawCnpj) : 'N/A';
+        const displayCityState = res.client?.city ? `${res.client.city} / ${res.client.state || 'PI'}`.toUpperCase() : 'N/A';
 
-        ws_data.push([
-          { v: 'COD.', t: 's', s: tableHeadStyle },
-          { v: 'EAN', t: 's', s: tableHeadStyle },
-          { v: 'DESCRICAO', t: 's', s: tableHeadStyle },
-          { v: 'PRECO', t: 's', s: tableHeadStyle },
-          { v: 'DESC%', t: 's', s: tableHeadStyle },
-          { v: 'PR.FINAL', t: 's', s: tableHeadStyle },
-          { v: 'QT', t: 's', s: tableHeadStyle },
-          { v: 'SUBTOTAL', t: 's', s: tableHeadStyle },
-          { v: 'STATUS', t: 's', s: tableHeadStyle }
-        ]);
+        const clientRows = [
+          ['Nome Fantasia', displayTradeName.toUpperCase()],
+          ['ID Cliente', res.client?.id || 'N/A'],
+          ['Razão Social', displayLegalName.toUpperCase()],
+          ['CNPJ', formattedCnpj],
+          ['Vendedor', (profile?.name || 'Leonel Amorim').toUpperCase()],
+          ['Cidade/Estado', displayCityState]
+        ];
+
+        clientRows.forEach(row => {
+          const r = worksheet.addRow(row);
+          r.getCell(1).font = { bold: true, color: { argb: 'FF334155' } };
+          r.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: lightSlateBg } };
+          worksheet.mergeCells(`B${r.number}:J${r.number}`);
+        });
+
+        const mRow = worksheet.addRow([`INDÚSTRIA: ${manufacturer.toUpperCase()}`]);
+        worksheet.mergeCells(`A${mRow.number}:J${mRow.number}`);
+        mRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navyColor } };
+        mRow.getCell(1).font = { bold: true, size: 10, color: { argb: whiteColor } };
+        mRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+
+        const tableHeader = worksheet.addRow(['FOTO', 'COD.', 'EAN', 'DESCRICAO', 'PRECO', 'DESC%', 'PR.FINAL', 'QT', 'SUBTOTAL', 'STATUS']);
+        tableHeader.eachCell(cell => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: orangeColor } };
+          cell.font = { bold: true, color: { argb: whiteColor }, size: 9 };
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        });
 
         let orderPrecoSubtotal = 0;
         let orderNoStock = 0;
@@ -2389,98 +2901,241 @@ export default function ImportPanel() {
         selectedItems.forEach((item: any) => {
           const salePrice = item.product?.salePrice || item.price || 0;
           const finalPrice = item.product?.finalPrice || item.price || 0;
-          const subtotal = Math.round((finalPrice * item.quantity) * 100) / 100;
-          const rowPrecoSubtotal = Math.round((salePrice * item.quantity) * 100) / 100;
-          const rowDiscount = Math.round(((salePrice - finalPrice) * item.quantity) * 100) / 100;
-          const hasStock = item.product ? item.product.stock > 0 : false;
-          
-          orderPrecoSubtotal = Math.round((orderPrecoSubtotal + rowPrecoSubtotal) * 100) / 100;
-          orderDiscount = Math.round((orderDiscount + rowDiscount) * 100) / 100;
-          if (!hasStock) orderNoStock = Math.round((orderNoStock + subtotal) * 100) / 100;
+          const qty = item.quantity || 1;
+          const itemSaleSubtotal = salePrice * qty;
 
-          ws_data.push([
-            { v: item.product?.id || 'N/A', t: 's', s: centerStyle },
-            { v: item.ean, t: 's', s: centerStyle },
-            { v: item.description.toUpperCase(), t: 's', s: cellStyle },
-            { v: salePrice, t: 'n', s: moneyStyle },
-            { v: `${salePrice > 0 ? Math.round((1 - finalPrice / salePrice) * 100) : 0}%`, t: 's', s: centerStyle },
-            { v: finalPrice, t: 'n', s: highlightMoneyStyle },
-            { v: item.quantity, t: 'n', s: centerStyle },
-            { v: subtotal, t: 'n', s: subtotalMoneyStyle },
-            { v: hasStock ? 'OK' : 'Sem estoque', t: 's', s: { ...centerStyle, font: { color: { rgb: hasStock ? "009600" : "C80000" }, bold: !hasStock } } }
-          ]);
+          orderPrecoSubtotal += itemSaleSubtotal;
+
+          const isFound = item.found !== false && item.found !== undefined ? item.found : !!item.product;
+          const hasStock = item.product ? item.product.stock > 0 : (item.status !== 'Sem estoque' && item.hasStock !== false);
+          if (!isFound || !hasStock) {
+            orderNoStock += itemSaleSubtotal;
+          } else {
+            orderDiscount += Math.max(0, (salePrice - finalPrice) * qty);
+          }
+
+          const discVal = salePrice > 0 ? (1 - finalPrice / salePrice) * 100 : 0;
+          const discountStr = discVal.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+          const rowSubtotal = Math.round((finalPrice * qty) * 100) / 100;
+          const statusLabel = !isFound ? 'NÃO ENCONTRADO' : (hasStock ? 'OK' : 'Sem estoque');
+
+          const rowData = [
+            '',
+            item.product?.id || item.code || 'N/A',
+            item.ean || '-',
+            (item.description || 'SEM DESCRIÇÃO').toUpperCase(),
+            salePrice,
+            `${discountStr}%`,
+            finalPrice,
+            item.quantity || 1,
+            rowSubtotal,
+            statusLabel
+          ];
+
+          const row = worksheet.addRow(rowData);
+          row.height = 36;
+
+          row.eachCell((cell, colNumber) => {
+            cell.alignment = { horizontal: 'center', vertical: 'middle' };
+            if (colNumber === 4) cell.alignment = { horizontal: 'left', vertical: 'middle' };
+            if (colNumber === 6) cell.font = { color: { argb: 'FF16A34A' }, bold: true };
+            if (colNumber === 5 || colNumber === 7 || colNumber === 9) {
+              cell.numFmt = '"R$ "#,##0.00';
+              if (colNumber === 7) cell.font = { color: { argb: 'FF0F172A' }, bold: true };
+              if (colNumber === 9) cell.font = { color: { argb: orangeColor }, bold: true };
+            }
+            if (colNumber === 10) {
+              const strVal = String(cell.value || '');
+              if (strVal.includes('NÃO ENCONTRADO')) {
+                cell.font = { color: { argb: 'FFDC2626' }, bold: true };
+              } else if (strVal.includes('Sem estoque')) {
+                cell.font = { color: { argb: 'FFEAB308' }, bold: true };
+              } else {
+                cell.font = { color: { argb: 'FF16A34A' }, bold: true };
+              }
+            }
+          });
+
+          const key = String(item.product?.id || item.ean || item.code || item.description || '');
+          const imgData = thumbnails[key];
+          if (imgData) {
+            try {
+              const imageId = workbook.addImage({
+                base64: imgData,
+                extension: 'jpeg',
+              });
+              worksheet.addImage(imageId, {
+                tl: { col: 0.1, row: row.number - 1 + 0.1 },
+                br: { col: 0.9, row: row.number - 0.1 },
+                editAs: 'oneCell',
+              } as any);
+            } catch (e) {
+              console.error('Error adding image to Excel row:', e);
+            }
+          }
         });
 
         const orderSubtotal = Math.round(orderPrecoSubtotal * 100) / 100;
-        const orderTotal = Math.round((orderSubtotal - orderNoStock - orderDiscount) * 100) / 100;
+        const roundedOrderNoStock = Math.round(orderNoStock * 100) / 100;
+        const roundedOrderDiscount = Math.round(orderDiscount * 100) / 100;
+        const orderTotal = Math.max(0, Math.round((orderSubtotal - roundedOrderNoStock - roundedOrderDiscount) * 100) / 100);
 
-        ws_data.push([null, null, null, null, null, null, { v: 'SUBTOTAL', t: 's', s: labelStyle }, { v: orderSubtotal, t: 'n', s: moneyStyle }, null]);
-        ws_data.push([null, null, null, null, null, null, { v: 'SEM ESTOQUE', t: 's', s: { ...labelStyle, font: { ...labelStyle.font, color: { rgb: "C80000" } } } }, { v: orderNoStock, t: 'n', s: { ...moneyStyle, font: { ...moneyStyle.font, color: { rgb: "C80000" } } } }, null]);
-        ws_data.push([null, null, null, null, null, null, { v: 'DESCONTO', t: 's', s: { ...labelStyle, font: { ...labelStyle.font, color: { rgb: "009600" } } } }, { v: -orderDiscount, t: 'n', s: { ...moneyStyle, font: { ...moneyStyle.font, color: { rgb: "009600" } } } }, null]);
-        ws_data.push([null, null, null, null, null, null, { v: 'TOTAL', t: 's', s: { ...labelStyle, font: { ...labelStyle.font, bold: true } } }, { v: orderTotal, t: 'n', s: { ...moneyStyle, font: { ...moneyStyle.font, bold: true } } }, null]);
-        ws_data.push([]); // Spacer
-      });
+        const colStart = 4;
+        const colVal = 9;
+        const colEnd = 10;
 
-      // Global Summary at the bottom
-      let globalPrecoSubtotal = 0;
-      let globalNoStock = 0;
-      let globalDiscount = 0;
-      ordersToExport.forEach(res => {
-        const resIdx = results.indexOf(res);
-        const selectedItems = res.items.filter((_: any, iIdx: number) => checkedItems.has(`${resIdx}-${iIdx}`));
-        selectedItems.forEach(item => {
-          const salePrice = item.product?.salePrice || item.price || 0;
-          const finalPrice = item.product?.finalPrice || item.price || 0;
-          const subtotal = Math.round((finalPrice * item.quantity) * 100) / 100;
-          const rowPrecoSubtotal = Math.round((salePrice * item.quantity) * 100) / 100;
-          const rowDiscount = Math.round(((salePrice - finalPrice) * item.quantity) * 100) / 100;
-          const hasStock = item.product ? item.product.stock > 0 : false;
-          
-          globalPrecoSubtotal = Math.round((globalPrecoSubtotal + rowPrecoSubtotal) * 100) / 100;
-          globalDiscount = Math.round((globalDiscount + rowDiscount) * 100) / 100;
-          if (!hasStock) {
-            globalNoStock = Math.round((globalNoStock + subtotal) * 100) / 100;
+        const indHeaderRow = worksheet.addRow([]);
+        const indStartRowNum = indHeaderRow.number;
+        indHeaderRow.getCell(colStart).value = `RESUMO - INDÚSTRIA: ${manufacturer.toUpperCase()}`;
+        worksheet.mergeCells(indStartRowNum, colStart, indStartRowNum, colEnd);
+        indHeaderRow.height = 22;
+
+        const ihCell = indHeaderRow.getCell(colStart);
+        ihCell.font = { name: 'Calibri', bold: true, color: { argb: 'FF0F172A' }, size: 9.5 };
+        ihCell.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+        ihCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+
+        for (let c = colStart; c <= colEnd; c++) {
+          indHeaderRow.getCell(c).border = {
+            top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+            left: c === colStart ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined,
+            right: c === colEnd ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined,
+            bottom: { style: 'medium', color: { argb: orangeColor } }
+          };
+        }
+
+        const subRow = worksheet.addRow([]);
+        const subRowNum = subRow.number;
+        subRow.getCell(colStart).value = 'SUBTOTAL (TABELA):';
+        subRow.getCell(colVal).value = orderSubtotal;
+        worksheet.mergeCells(subRowNum, colStart, subRowNum, colVal - 1);
+        worksheet.mergeCells(subRowNum, colVal, subRowNum, colEnd);
+        subRow.height = 19;
+        subRow.getCell(colStart).font = { name: 'Calibri', bold: true, color: { argb: 'FF64748B' }, size: 9 };
+        subRow.getCell(colStart).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+        subRow.getCell(colVal).font = { name: 'Calibri', bold: true, color: { argb: 'FF0F172A' }, size: 9 };
+        subRow.getCell(colVal).alignment = { horizontal: 'right', vertical: 'middle' };
+        subRow.getCell(colVal).numFmt = '"R$ "#,##0.00';
+
+        for (let c = colStart; c <= colEnd; c++) {
+          const cell = subRow.getCell(c);
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+          cell.border = {
+            left: c === colStart ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined,
+            right: c === colEnd ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined,
+            bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } }
+          };
+        }
+
+        if (roundedOrderNoStock > 0) {
+          const nsRow = worksheet.addRow([]);
+          const nsRowNum = nsRow.number;
+          nsRow.getCell(colStart).value = 'SEM ESTOQUE / INDISP.:';
+          nsRow.getCell(colVal).value = -roundedOrderNoStock;
+          worksheet.mergeCells(nsRowNum, colStart, nsRowNum, colVal - 1);
+          worksheet.mergeCells(nsRowNum, colVal, nsRowNum, colEnd);
+          nsRow.height = 19;
+          nsRow.getCell(colStart).font = { name: 'Calibri', bold: true, color: { argb: 'FFDC2626' }, size: 9 };
+          nsRow.getCell(colStart).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+          nsRow.getCell(colVal).font = { name: 'Calibri', bold: true, color: { argb: 'FFDC2626' }, size: 9 };
+          nsRow.getCell(colVal).alignment = { horizontal: 'right', vertical: 'middle' };
+          nsRow.getCell(colVal).numFmt = '- "R$ "#,##0.00';
+
+          for (let c = colStart; c <= colEnd; c++) {
+            const cell = nsRow.getCell(c);
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+            cell.border = {
+              left: c === colStart ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined,
+              right: c === colEnd ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined,
+              bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } }
+            };
           }
-        });
+        }
+
+        if (roundedOrderDiscount > 0) {
+          const discRow = worksheet.addRow([]);
+          const discRowNum = discRow.number;
+          discRow.getCell(colStart).value = 'DESCONTO TOTAL:';
+          discRow.getCell(colVal).value = -roundedOrderDiscount;
+          worksheet.mergeCells(discRowNum, colStart, discRowNum, colVal - 1);
+          worksheet.mergeCells(discRowNum, colVal, discRowNum, colEnd);
+          discRow.height = 19;
+          discRow.getCell(colStart).font = { name: 'Calibri', bold: true, color: { argb: 'FF16A34A' }, size: 9 };
+          discRow.getCell(colStart).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+          discRow.getCell(colVal).font = { name: 'Calibri', bold: true, color: { argb: 'FF16A34A' }, size: 9 };
+          discRow.getCell(colVal).alignment = { horizontal: 'right', vertical: 'middle' };
+          discRow.getCell(colVal).numFmt = '- "R$ "#,##0.00';
+
+          for (let c = colStart; c <= colEnd; c++) {
+            const cell = discRow.getCell(c);
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } };
+            cell.border = {
+              left: c === colStart ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined,
+              right: c === colEnd ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined,
+              bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } }
+            };
+          }
+        }
+
+        const totRow = worksheet.addRow([]);
+        const totRowNum = totRow.number;
+        totRow.getCell(colStart).value = `TOTAL INDÚSTRIA (${manufacturer.toUpperCase()})`;
+        totRow.getCell(colVal).value = orderTotal;
+        worksheet.mergeCells(totRowNum, colStart, totRowNum, colVal - 1);
+        worksheet.mergeCells(totRowNum, colVal, totRowNum, colEnd);
+        totRow.height = 24;
+
+        const tLabelCell = totRow.getCell(colStart);
+        tLabelCell.font = { name: 'Calibri', bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+        tLabelCell.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+
+        const tValCell = totRow.getCell(colVal);
+        tValCell.font = { name: 'Calibri', bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+        tValCell.alignment = { horizontal: 'right', vertical: 'middle' };
+        tValCell.numFmt = '"R$ "#,##0.00';
+
+        for (let c = colStart; c <= colEnd; c++) {
+          const cell = totRow.getCell(c);
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: orangeColor } };
+          cell.border = {
+            top: { style: 'thin', color: { argb: orangeColor } },
+            bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+            left: c === colStart ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined,
+            right: c === colEnd ? { style: 'thin', color: { argb: 'FFE2E8F0' } } : undefined
+          };
+        }
+
+        worksheet.addRow([]);
       });
-      const globalSubtotal = Math.round(globalPrecoSubtotal * 100) / 100;
-      const globalTotal = Math.round((globalSubtotal - globalNoStock - globalDiscount) * 100) / 100;
 
-      ws_data.push([]);
-      ws_data.push([{ v: 'RESUMO FINANCEIRO GERAL', t: 's', s: sectionBarStyle }, null, null, null, null, null, null, null, null]);
-      merges.push({ s: { r: ws_data.length - 1, c: 0 }, e: { r: ws_data.length - 1, c: 8 } });
-      
-      ws_data.push([{ v: 'TOTAL DE PEDIDOS:', t: 's', s: labelStyle }, { v: ordersToExport.length, t: 'n', s: valueStyle }, null, null, null, null, null, null, null]);
-      ws_data.push([{ v: 'SUBTOTAL GERAL:', t: 's', s: labelStyle }, { v: globalSubtotal, t: 'n', s: moneyStyle }, null, null, null, null, null, null, null]);
-      ws_data.push([{ v: 'SEM ESTOQUE GERAL:', t: 's', s: { ...labelStyle, font: { ...labelStyle.font, color: { rgb: "C80000" } } } }, { v: globalNoStock, t: 'n', s: { ...moneyStyle, font: { ...moneyStyle.font, color: { rgb: "C80000" } } } }, null, null, null, null, null, null, null]);
-      ws_data.push([{ v: 'DESCONTO TOTAL:', t: 's', s: { ...labelStyle, font: { ...labelStyle.font, color: { rgb: "009600" } } } }, { v: -globalDiscount, t: 'n', s: { ...moneyStyle, font: { ...moneyStyle.font, color: { rgb: "009600" } } } }, null, null, null, null, null, null, null]);
-      ws_data.push([{ v: 'TOTAL GERAL DOS PEDIDOS:', t: 's', s: { ...labelStyle, font: { ...labelStyle.font, sz: 12, color: { rgb: "003264" }, bold: true } } }, { v: globalTotal, t: 'n', s: { ...moneyStyle, font: { ...moneyStyle.font, sz: 12, color: { rgb: "003264" }, bold: true } } }, null, null, null, null, null, null, null]);
-
-      const ws = XLSXStyle.utils.aoa_to_sheet(ws_data);
-      ws['!merges'] = merges;
-      ws['!cols'] = [
-        { wch: 10 }, { wch: 15 }, { wch: 45 }, { wch: 12 }, { wch: 8 }, 
-        { wch: 12 }, { wch: 8 }, { wch: 15 }, { wch: 15 }
+      worksheet.columns = [
+        { width: 10 }, { width: 12 }, { width: 18 }, { width: 45 }, { width: 15 }, { width: 14 }, { width: 15 }, { width: 12 }, { width: 15 }, { width: 15 }
       ];
 
-      const wb = XLSXStyle.utils.book_new();
-      XLSXStyle.utils.book_append_sheet(wb, ws, 'Relatório_Consolidado');
-      
-      const wbout = XLSXStyle.write(wb, { bookType: 'xlsx', type: 'array' });
-      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = window.URL.createObjectURL(blob);
+
+      const fileName = exportFilter === 'noStock'
+        ? 'Relatorio_Itens_Sem_Estoque.xlsx'
+        : exportFilter === 'notFound'
+        ? 'Relatorio_Itens_Nao_Encontrados.xlsx'
+        : exportFilter === 'unavailable'
+        ? 'Relatorio_Itens_Indisponiveis.xlsx'
+        : 'Relatorio_Importacao_Consolidado.xlsx';
+
       const a = document.createElement('a');
       a.href = url;
-      a.download = `Relatorio_Importacao_Consolidado_${new Date().getTime()}.xlsx`;
+      a.download = fileName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
-      
-      toast.success('Relatório Excel consolidado gerado com sucesso');
+
+      toast.success('Excel exportado com sucesso');
     } catch (error) {
-      console.error('Excel export error:', error);
-      toast.error('Erro ao exportar Excel geral');
+      console.error('Excel compile export error:', error);
+      toast.error('Erro ao exportar Excel');
     }
   };
 
@@ -2521,17 +3176,16 @@ export default function ImportPanel() {
         if (checkedItems.has(`${cIdx}-${iIdx}`)) {
           const salePrice = item.product?.salePrice || item.price || 0;
           const finalPrice = item.product?.finalPrice || item.price || 0;
-          
-          const rowSubtotal = Math.round(finalPrice * item.quantity * 100) / 100;
-          const rowPrecoSubtotal = Math.round(salePrice * item.quantity * 100) / 100;
-          const rowDiscount = Math.round((salePrice - finalPrice) * item.quantity * 100) / 100;
+          const qty = item.quantity || 1;
+          const itemSaleSubtotal = salePrice * qty;
 
-          clientSubtotal += rowPrecoSubtotal;
-          clientDiscount += rowDiscount;
-          
-          const hasStock = item.product ? item.product.stock > 0 : false;
+          clientSubtotal += itemSaleSubtotal;
+
+          const hasStock = item.product ? item.product.stock > 0 : (item.status !== 'Sem estoque' && item.hasStock !== false);
           if (!hasStock) {
-            clientNoStock += rowSubtotal;
+            clientNoStock += itemSaleSubtotal;
+          } else {
+            clientDiscount += Math.max(0, (salePrice - finalPrice) * qty);
           }
         }
       });
@@ -3030,7 +3684,7 @@ export default function ImportPanel() {
                               {res.headerInfo.condPgto && <span>COND. PGTO: {res.headerInfo.condPgto}</span>}
                               {res.headerInfo.status && <span>STATUS: {res.headerInfo.status}</span>}
                               {res.headerInfo.dataEntrega && <span>DATA ENTREGA: {res.headerInfo.dataEntrega}</span>}
-                              {res.headerInfo.cotacao && <span>COTAÇÃO: {res.headerInfo.cotacao}</span>}
+                              {res.headerInfo.cotacao && <span>IMPORTAÇÃO: {res.headerInfo.cotacao}</span>}
                             </div>
                           )}
 
@@ -3056,25 +3710,143 @@ export default function ImportPanel() {
                           </div>
                         </div>
                         
-                        <div className="flex gap-3 shrink-0">
-                          <motion.button 
-                            whileHover={{ scale: 1.1, backgroundColor: "rgba(255,255,255,0.3)" }}
-                            whileTap={{ scale: 0.9 }}
-                            onClick={() => exportIndividualOrderToExcel(clientIdx)}
-                            className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center text-white border border-white/20 transition-all shadow-lg"
-                            title="Exportar Excel"
-                          >
-                            <Table size={24} />
-                          </motion.button>
-                          <motion.button 
-                            whileHover={{ scale: 1.1, backgroundColor: "rgba(255,255,255,0.3)" }}
-                            whileTap={{ scale: 0.9 }}
-                            onClick={() => exportIndividualOrderToPDF(clientIdx)}
-                            className="w-12 h-12 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center text-white border border-white/20 transition-all shadow-lg"
-                            title="Exportar PDF"
-                          >
-                            <FileText size={24} />
-                          </motion.button>
+                        <div className="relative shrink-0 flex items-center gap-2">
+                          <div className="flex items-center gap-1.5 bg-white/20 backdrop-blur-md p-1.5 rounded-2xl border border-white/20 shadow-lg">
+                            <motion.button 
+                              whileHover={{ scale: 1.05 }}
+                              whileTap={{ scale: 0.95 }}
+                              onClick={() => exportIndividualOrderToPDF(clientIdx, selectedExportFilter)}
+                              className="px-3 py-2 bg-white/20 hover:bg-white/30 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                              title="Exportar PDF com o filtro ativo"
+                            >
+                              <FileText size={18} />
+                              <span className="hidden sm:inline">PDF</span>
+                            </motion.button>
+
+                            <motion.button 
+                              whileHover={{ scale: 1.05 }}
+                              whileTap={{ scale: 0.95 }}
+                              onClick={() => exportIndividualOrderToExcel(clientIdx, selectedExportFilter)}
+                              className="px-3 py-2 bg-white/20 hover:bg-white/30 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                              title="Exportar Excel com o filtro ativo"
+                            >
+                              <Table size={18} />
+                              <span className="hidden sm:inline">EXCEL</span>
+                            </motion.button>
+
+                            <motion.button 
+                              whileHover={{ scale: 1.05 }}
+                              whileTap={{ scale: 0.95 }}
+                              onClick={() => setActiveOrderExportMenu(activeOrderExportMenu === clientIdx ? null : clientIdx)}
+                              className="p-2 bg-white/20 hover:bg-white/30 text-white rounded-xl transition-all cursor-pointer"
+                              title="Opções avançadas de exportação"
+                            >
+                              <ChevronRight size={18} className={cn("transition-transform duration-200", activeOrderExportMenu === clientIdx && "rotate-90")} />
+                            </motion.button>
+                          </div>
+
+                          {/* Order Export Dropdown Menu */}
+                          {activeOrderExportMenu === clientIdx && (
+                            <div className="absolute right-0 top-14 z-50 w-72 bg-white dark:bg-gray-900 rounded-2xl p-3 shadow-2xl border border-gray-100 dark:border-gray-800 text-gray-800 dark:text-gray-100 animate-in fade-in zoom-in-95 duration-150">
+                              <div className="flex items-center justify-between pb-2 mb-2 border-b border-gray-100 dark:border-gray-800">
+                                <span className="text-[10px] font-black uppercase text-gray-400 tracking-wider">
+                                  Exportar Este Pedido
+                                </span>
+                                <button 
+                                  onClick={() => setActiveOrderExportMenu(null)}
+                                  className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+
+                              <div className="space-y-2">
+                                <div>
+                                  <span className="text-[9px] font-bold uppercase text-gray-400 block mb-1">📄 Exportar PDF</span>
+                                  <div className="grid grid-cols-2 gap-1">
+                                    <button
+                                      onClick={() => {
+                                        exportIndividualOrderToPDF(clientIdx, 'all');
+                                        setActiveOrderExportMenu(null);
+                                      }}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold rounded-xl bg-gray-50 dark:bg-gray-800 hover:bg-orange-500 hover:text-white transition-colors text-left truncate"
+                                    >
+                                      Todos
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        exportIndividualOrderToPDF(clientIdx, 'noStock');
+                                        setActiveOrderExportMenu(null);
+                                      }}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold rounded-xl bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 hover:bg-amber-500 hover:text-white transition-colors text-left truncate"
+                                    >
+                                      Sem Estoque
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        exportIndividualOrderToPDF(clientIdx, 'notFound');
+                                        setActiveOrderExportMenu(null);
+                                      }}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold rounded-xl bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 hover:bg-red-500 hover:text-white transition-colors text-left truncate"
+                                    >
+                                      Não Encontrados
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        exportIndividualOrderToPDF(clientIdx, 'unavailable');
+                                        setActiveOrderExportMenu(null);
+                                      }}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold rounded-xl bg-purple-50 dark:bg-purple-950/30 text-purple-700 dark:text-purple-400 hover:bg-purple-600 hover:text-white transition-colors text-left truncate"
+                                    >
+                                      Indisponíveis
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <div className="pt-2 border-t border-gray-100 dark:border-gray-800">
+                                  <span className="text-[9px] font-bold uppercase text-gray-400 block mb-1">📊 Exportar Excel</span>
+                                  <div className="grid grid-cols-2 gap-1">
+                                    <button
+                                      onClick={() => {
+                                        exportIndividualOrderToExcel(clientIdx, 'all');
+                                        setActiveOrderExportMenu(null);
+                                      }}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold rounded-xl bg-gray-50 dark:bg-gray-800 hover:bg-green-600 hover:text-white transition-colors text-left truncate"
+                                    >
+                                      Todos
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        exportIndividualOrderToExcel(clientIdx, 'noStock');
+                                        setActiveOrderExportMenu(null);
+                                      }}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold rounded-xl bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 hover:bg-amber-500 hover:text-white transition-colors text-left truncate"
+                                    >
+                                      Sem Estoque
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        exportIndividualOrderToExcel(clientIdx, 'notFound');
+                                        setActiveOrderExportMenu(null);
+                                      }}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold rounded-xl bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 hover:bg-red-500 hover:text-white transition-colors text-left truncate"
+                                    >
+                                      Não Encontrados
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        exportIndividualOrderToExcel(clientIdx, 'unavailable');
+                                        setActiveOrderExportMenu(null);
+                                      }}
+                                      className="px-2.5 py-1.5 text-[11px] font-bold rounded-xl bg-purple-50 dark:bg-purple-950/30 text-purple-700 dark:text-purple-400 hover:bg-purple-600 hover:text-white transition-colors text-left truncate"
+                                    >
+                                      Indisponíveis
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -3087,51 +3859,70 @@ export default function ImportPanel() {
                           <div 
                             key={itemIdx} 
                             className={cn(
-                              "p-4 flex items-center gap-4 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50",
-                              !isChecked && "opacity-50"
+                              "p-4 flex flex-col sm:flex-row sm:items-center gap-4 transition-colors hover:bg-gray-50/80 dark:hover:bg-gray-800/50",
+                              !isChecked && "opacity-60"
                             )}
                           >
-                            <button 
-                              onClick={() => toggleItem(clientIdx, itemIdx)}
-                              className={cn(
-                                "w-6 h-6 rounded flex items-center justify-center transition-all shrink-0",
-                                isChecked ? "bg-green-500 text-white" : "border-2 border-gray-200 dark:border-gray-700"
-                              )}
-                            >
-                              {isChecked && <CheckCircle2 size={16} />}
-                            </button>
-
-                            {item.product?.photo && (
-                              <div 
-                                className="w-12 h-12 bg-gray-50 dark:bg-gray-800 rounded-lg p-1 shrink-0 cursor-zoom-in"
-                                onClick={() => setSelectedImage(item.product.photo)}
+                            <div className="flex items-center gap-3 shrink-0">
+                              <button 
+                                onClick={() => toggleItem(clientIdx, itemIdx)}
+                                className={cn(
+                                  "w-6 h-6 rounded flex items-center justify-center transition-all shrink-0",
+                                  isChecked ? "bg-green-500 text-white" : "border-2 border-gray-200 dark:border-gray-700"
+                                )}
                               >
-                                <img 
-                                  src={item.product.photo} 
-                                  alt={item.description} 
-                                  className="w-full h-full object-contain"
-                                  referrerPolicy="no-referrer"
-                                />
-                              </div>
-                            )}
+                                {isChecked && <CheckCircle2 size={16} />}
+                              </button>
+
+                              {(item.product?.photo || item.suggestedProduct?.photo) && (
+                                <div 
+                                  className="w-12 h-12 bg-gray-50 dark:bg-gray-800 rounded-lg p-1 shrink-0 cursor-zoom-in border border-gray-200/50 dark:border-gray-700/50"
+                                  onClick={() => setSelectedImage(item.product?.photo || item.suggestedProduct?.photo)}
+                                >
+                                  <img 
+                                    src={item.product?.photo || item.suggestedProduct?.photo} 
+                                    alt={item.description} 
+                                    className="w-full h-full object-contain"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                </div>
+                              )}
+                            </div>
 
                             <div className="flex-1 min-w-0">
-                              <h4 className="font-bold text-gray-900 dark:text-white truncate uppercase text-sm leading-tight">
-                                {item.description}
-                              </h4>
-                              <div className="flex items-center gap-2 mt-1">
-                                <span className="text-[10px] font-mono text-gray-400">EAN: {item.ean}</span>
-                                {item.product?.industry && (
-                                  <span className="text-[10px] font-bold text-[#F06292] uppercase">{item.product.industry}</span>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h4 className="font-bold text-gray-900 dark:text-white uppercase text-sm leading-tight">
+                                  {item.description}
+                                </h4>
+                                {item.isReplaced && (
+                                  <span className="text-[9px] font-extrabold px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 uppercase">
+                                    Substituído
+                                  </span>
                                 )}
                               </div>
-                              {item.found && (
-                                <div className="mt-2 flex gap-2">
+
+                              <div className="flex items-center gap-3 mt-1 text-[11px] font-mono text-gray-400">
+                                <span>EAN: {item.ean || 'N/A'}</span>
+                                {(item.product?.industry || item.suggestedProduct?.industry) && (
+                                  <span className="font-bold text-[#F06292] uppercase font-sans">
+                                    {item.product?.industry || item.suggestedProduct?.industry}
+                                  </span>
+                                )}
+                                {item.product?.finalPrice ? (
+                                  <span className="font-bold text-green-600 dark:text-green-400 font-sans">
+                                    {formatCurrency(item.product.finalPrice)}
+                                  </span>
+                                ) : null}
+                              </div>
+
+                              {/* CASE 1: MATCHED IN CATALOG */}
+                              {item.found && item.product && (
+                                <div className="mt-2 flex items-center gap-2 flex-wrap">
                                   <span className={cn(
                                     "text-[10px] font-bold px-2 py-0.5 rounded uppercase",
-                                    item.product?.stock > 10 ? "bg-green-100 text-green-600" : 
-                                    item.product?.stock > 0 ? "bg-yellow-100 text-yellow-600" : 
-                                    "bg-red-100 text-red-600"
+                                    item.product?.stock > 10 ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" : 
+                                    item.product?.stock > 0 ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400" : 
+                                    "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
                                   )}>
                                     {item.product?.stock > 10 ? 'Em Estoque' : 
                                      item.product?.stock > 0 ? 'Estoque Baixo' : 
@@ -3140,18 +3931,85 @@ export default function ImportPanel() {
                                   {item.product?.type === 'offer' && (
                                     <span className="text-[10px] font-black px-2 py-0.5 bg-orange-100 text-orange-600 rounded uppercase">Oferta</span>
                                   )}
+                                  <button
+                                    onClick={() => setReplacingItem({ clientIdx, itemIdx, item })}
+                                    className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-orange-100 hover:text-orange-600 transition-colors flex items-center gap-1 border border-gray-200 dark:border-gray-700 cursor-pointer"
+                                    title="Substituir por outro produto do catálogo"
+                                  >
+                                    <Search size={10} /> Substituir Produto
+                                  </button>
                                 </div>
                               )}
-                              {!item.found && (
-                                <div className="mt-2">
-                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase bg-red-100 text-red-600">
+
+                              {/* CASE 2: SUGGESTION FOUND BY DESCRIPTION */}
+                              {!item.found && item.suggestedProduct && (
+                                <div className="mt-3 p-3 bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 rounded-2xl">
+                                  <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400 text-[11px] font-black uppercase mb-1.5">
+                                    <Sparkles size={13} className="shrink-0 text-amber-500" />
+                                    <span>Sugestão Encontrada por Descrição ({item.matchScore}% Similar)</span>
+                                  </div>
+
+                                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                                    <div className="flex items-center gap-2.5 min-w-0">
+                                      {item.suggestedProduct.photo && (
+                                        <img 
+                                          src={item.suggestedProduct.photo} 
+                                          alt="" 
+                                          className="w-9 h-9 object-contain rounded bg-white p-0.5 border border-amber-200/60 shrink-0" 
+                                        />
+                                      )}
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-bold text-gray-900 dark:text-white truncate uppercase">
+                                          {item.suggestedProduct.description}
+                                        </p>
+                                        <p className="text-[10px] text-gray-500 dark:text-gray-400 font-mono">
+                                          EAN: {item.suggestedProduct.ean} | Preço: <strong className="text-green-600">{formatCurrency(item.suggestedProduct.finalPrice)}</strong> | Estoque: {item.suggestedProduct.stock || 0}
+                                        </p>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <button
+                                        onClick={() => handleConfirmSuggestion(clientIdx, itemIdx)}
+                                        className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-xs font-black uppercase shadow-sm flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                                      >
+                                        <CheckCircle2 size={14} /> Confirmar
+                                      </button>
+                                      <button
+                                        onClick={() => setReplacingItem({ clientIdx, itemIdx, item })}
+                                        className="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-xl text-xs font-black uppercase shadow-sm flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                                      >
+                                        <Search size={14} /> Substituir
+                                      </button>
+                                      <button
+                                        onClick={() => handleRejectSuggestion(clientIdx, itemIdx)}
+                                        className="p-1.5 text-gray-400 hover:text-red-500 transition-colors cursor-pointer"
+                                        title="Rejeitar sugestão"
+                                      >
+                                        <X size={14} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* CASE 3: NOT FOUND AND NO SUGGESTION */}
+                              {!item.found && !item.suggestedProduct && (
+                                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded uppercase bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400">
                                     Não encontrado no catálogo
                                   </span>
+                                  <button
+                                    onClick={() => setReplacingItem({ clientIdx, itemIdx, item })}
+                                    className="text-[10px] font-black px-2.5 py-1 rounded-xl bg-gradient-to-r from-orange-500 to-pink-500 text-white hover:opacity-90 transition-all flex items-center gap-1 shadow-sm active:scale-95 cursor-pointer"
+                                  >
+                                    <Search size={12} /> Buscar e Vincular Produto
+                                  </button>
                                 </div>
                               )}
                             </div>
 
-                            <div className="flex flex-col items-end gap-1 shrink-0">
+                            <div className="flex items-center justify-between sm:flex-col sm:items-end gap-1 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-100 dark:border-gray-800">
                               <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Qtd:</span>
                               <div className="flex items-center gap-1 bg-gray-50 dark:bg-gray-800 rounded-xl p-1 shadow-sm border border-gray-200/50 dark:border-gray-700/50">
                                 <motion.button
@@ -3358,49 +4216,117 @@ export default function ImportPanel() {
                   </div>
                 </div>
 
-                <div className="mt-8 pt-6 border-t border-gray-100 dark:border-gray-800 flex flex-col md:flex-row items-center justify-between gap-4">
-                  <button 
-                    onClick={() => {
-                      setResults([]);
-                      toast.success('Importação cancelada.');
-                    }}
-                    className="order-4 md:order-1 text-gray-400 hover:text-red-500 font-bold uppercase tracking-wider text-[11px] transition-colors py-2"
-                  >
-                    CANCELAR IMPORTAÇÃO
-                  </button>
-                  
-                  <div className="order-2 md:order-2 flex gap-3 w-full md:w-auto">
-                    <motion.button 
-                      whileHover={{ y: -2 }}
-                      whileTap={{ scale: 0.98 }}
-                      onClick={exportAllOrdersToExcel}
-                      className="flex-1 md:flex-none px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl font-bold flex items-center justify-center gap-2 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm text-xs group"
-                    >
-                      <Download size={16} className="group-hover:scale-110 transition-transform" />
-                      <span className="uppercase tracking-wider">EXCEL GERAL</span>
-                    </motion.button>
-                    
-                    <motion.button 
-                      whileHover={{ y: -2 }}
-                      whileTap={{ scale: 0.98 }}
-                      onClick={exportAllOrdersToPDF}
-                      className="flex-1 md:flex-none px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl font-bold flex items-center justify-center gap-2 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors shadow-sm text-xs group"
-                    >
-                      <Download size={16} className="group-hover:scale-110 transition-transform" />
-                      <span className="uppercase tracking-wider">PDF GERAL</span>
-                    </motion.button>
+                {/* Global Export Filter Bar & Action Buttons */}
+                <div className="mt-8 pt-6 border-t border-gray-100 dark:border-gray-800 space-y-4">
+                  <div className="flex items-center justify-between gap-2 flex-wrap bg-gray-50 dark:bg-gray-800/60 p-2.5 rounded-2xl border border-gray-100 dark:border-gray-800">
+                    <span className="text-[11px] font-black uppercase text-gray-500 dark:text-gray-400 px-2 tracking-wider flex items-center gap-1.5">
+                      <Download size={14} className="text-[#FF6B00]" />
+                      <span>Filtro de Exportação:</span>
+                    </span>
+
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedExportFilter('all')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer",
+                          selectedExportFilter === 'all'
+                            ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm border border-gray-200 dark:border-gray-600"
+                            : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                        )}
+                      >
+                        Todos os Itens
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedExportFilter('noStock')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer",
+                          selectedExportFilter === 'noStock'
+                            ? "bg-amber-500 text-white shadow-sm"
+                            : "text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                        )}
+                      >
+                        <AlertCircle size={13} />
+                        <span>Sem Estoque</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedExportFilter('notFound')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer",
+                          selectedExportFilter === 'notFound'
+                            ? "bg-red-500 text-white shadow-sm"
+                            : "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30"
+                        )}
+                      >
+                        <X size={13} />
+                        <span>Não Encontrados</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedExportFilter('unavailable')}
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer",
+                          selectedExportFilter === 'unavailable'
+                            ? "bg-purple-600 text-white shadow-sm"
+                            : "text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/30"
+                        )}
+                      >
+                        <Package size={13} />
+                        <span>Indisponíveis (Ambos)</span>
+                      </button>
+                    </div>
                   </div>
 
-                  <motion.button 
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                    onClick={handleMakeAllOrders}
-                    disabled={isProcessing}
-                    className="order-1 md:order-3 w-full md:w-auto bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white px-6 py-3.5 rounded-xl font-extrabold text-sm shadow-md flex items-center justify-center gap-2 group disabled:opacity-50"
-                  >
-                    {isProcessing ? <RefreshCw className="animate-spin" size={18} /> : <Sparkles size={18} className="group-hover:rotate-12 transition-transform" />}
-                    <span>FAZER TODOS OS PEDIDOS</span>
-                  </motion.button>
+                  <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+                    <button 
+                      onClick={() => {
+                        setResults([]);
+                        toast.success('Importação cancelada.');
+                      }}
+                      className="order-4 md:order-1 text-gray-400 hover:text-red-500 font-bold uppercase tracking-wider text-[11px] transition-colors py-2"
+                    >
+                      CANCELAR IMPORTAÇÃO
+                    </button>
+                    
+                    <div className="order-2 md:order-2 flex gap-3 w-full md:w-auto">
+                      <motion.button 
+                        whileHover={{ y: -2 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => exportAllOrdersToExcel(selectedExportFilter)}
+                        className="flex-1 md:flex-none px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl font-bold flex items-center justify-center gap-2 text-gray-700 dark:text-gray-200 hover:bg-green-50 dark:hover:bg-green-950/20 hover:border-green-300 transition-colors shadow-sm text-xs group cursor-pointer"
+                      >
+                        <Table size={16} className="text-green-600 group-hover:scale-110 transition-transform" />
+                        <span className="uppercase tracking-wider">
+                          EXCEL GERAL {selectedExportFilter === 'noStock' ? '(SEM ESTOQUE)' : selectedExportFilter === 'notFound' ? '(NÃO ENCONTRADOS)' : selectedExportFilter === 'unavailable' ? '(INDISPONÍVEIS)' : ''}
+                        </span>
+                      </motion.button>
+                      
+                      <motion.button 
+                        whileHover={{ y: -2 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => exportAllOrdersToPDF(selectedExportFilter)}
+                        className="flex-1 md:flex-none px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl font-bold flex items-center justify-center gap-2 text-gray-700 dark:text-gray-200 hover:bg-red-50 dark:hover:bg-red-950/20 hover:border-red-300 transition-colors shadow-sm text-xs group cursor-pointer"
+                      >
+                        <FileText size={16} className="text-red-600 group-hover:scale-110 transition-transform" />
+                        <span className="uppercase tracking-wider">
+                          PDF GERAL {selectedExportFilter === 'noStock' ? '(SEM ESTOQUE)' : selectedExportFilter === 'notFound' ? '(NÃO ENCONTRADOS)' : selectedExportFilter === 'unavailable' ? '(INDISPONÍVEIS)' : ''}
+                        </span>
+                      </motion.button>
+                    </div>
+
+                    <motion.button 
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={handleMakeAllOrders}
+                      disabled={isProcessing}
+                      className="order-1 md:order-3 w-full md:w-auto bg-gradient-to-r from-[#FF6B00] to-[#F06292] text-white px-6 py-3.5 rounded-xl font-extrabold text-sm shadow-md flex items-center justify-center gap-2 group disabled:opacity-50"
+                    >
+                      {isProcessing ? <RefreshCw className="animate-spin" size={18} /> : <Sparkles size={18} className="group-hover:rotate-12 transition-transform" />}
+                      <span>FAZER TODOS OS PEDIDOS</span>
+                    </motion.button>
+                  </div>
                 </div>
               </div>
             </motion.div>
@@ -3706,6 +4632,138 @@ export default function ImportPanel() {
                       Importar Pedido ({parsedBulkItems.filter(item => item && item.product && !item.error).length})
                     </motion.button>
                   </div>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Product Substitution & Catalog Match Modal */}
+        <AnimatePresence>
+          {replacingItem && (
+            <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                className="bg-white dark:bg-gray-900 rounded-3xl max-w-2xl w-full p-6 shadow-2xl border border-gray-100 dark:border-gray-800 max-h-[90vh] flex flex-col font-sans"
+              >
+                {/* Modal Header */}
+                <div className="flex items-center justify-between pb-4 border-b border-gray-100 dark:border-gray-800">
+                  <div>
+                    <h3 className="text-lg font-black text-gray-900 dark:text-white uppercase font-display flex items-center gap-2">
+                      <Package className="text-[#FF6B00]" size={20} />
+                      Substituir Produto do Catálogo
+                    </h3>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      Busque o produto correto no catálogo para vincular ao item do pedido.
+                    </p>
+                  </div>
+                  <button 
+                    onClick={() => setReplacingItem(null)}
+                    className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                {/* Current Item Info Box */}
+                <div className="my-4 p-3 bg-orange-50/60 dark:bg-orange-950/20 rounded-2xl border border-orange-200/60 dark:border-orange-900/40 text-xs">
+                  <span className="font-bold text-orange-600 dark:text-orange-400 uppercase tracking-wider block text-[10px] mb-0.5">
+                    Item Original do Arquivo / Pedido:
+                  </span>
+                  <p className="font-bold text-gray-900 dark:text-white uppercase">
+                    {replacingItem.item.description || 'Descrição não informada'}
+                  </p>
+                  <p className="text-[10px] font-mono text-gray-500 mt-0.5">
+                    EAN Lido: {replacingItem.item.ean || 'Não informado'}
+                  </p>
+                </div>
+
+                {/* Search Bar */}
+                <div className="relative mb-4">
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                  <input
+                    type="text"
+                    value={replacementSearch}
+                    onChange={(e) => setReplacementSearch(e.target.value)}
+                    placeholder="Digite a descrição, EAN ou código para buscar no catálogo..."
+                    className="w-full pl-10 pr-10 py-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl text-sm font-medium focus:ring-2 focus:ring-[#FF6B00] outline-none text-gray-900 dark:text-white"
+                    autoFocus
+                  />
+                  {replacementSearch && (
+                    <button 
+                      onClick={() => setReplacementSearch('')}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Search Results List */}
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-[220px] max-h-[380px]">
+                  {filteredReplacementProducts.length === 0 ? (
+                    <div className="text-center py-12 text-gray-400 italic">
+                      <Package size={32} className="mx-auto mb-2 opacity-40" />
+                      Nenhum produto encontrado com esse termo no catálogo.
+                    </div>
+                  ) : (
+                    filteredReplacementProducts.map((prod) => (
+                      <div 
+                        key={prod.id}
+                        className="p-3 bg-white dark:bg-gray-800/60 rounded-2xl border border-gray-100 dark:border-gray-800 hover:border-orange-300 dark:hover:border-orange-700 flex items-center justify-between gap-3 transition-all"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          {prod.photo ? (
+                            <img 
+                              src={prod.photo} 
+                              alt="" 
+                              className="w-12 h-12 object-contain bg-gray-50 dark:bg-gray-900 rounded-xl p-1 border border-gray-100 dark:border-gray-800 shrink-0" 
+                            />
+                          ) : (
+                            <div className="w-12 h-12 bg-gray-100 dark:bg-gray-800 rounded-xl flex items-center justify-center shrink-0 text-gray-400">
+                              <Package size={20} />
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <h5 className="font-bold text-xs uppercase text-gray-900 dark:text-white truncate">
+                              {prod.description}
+                            </h5>
+                            <div className="flex items-center gap-2 mt-0.5 text-[10px] text-gray-400 font-mono flex-wrap">
+                              <span>EAN: {prod.ean}</span>
+                              <span>•</span>
+                              <span>ID: {prod.id}</span>
+                              {prod.industry && (
+                                <>
+                                  <span>•</span>
+                                  <span className="font-bold text-[#F06292] font-sans uppercase">{prod.industry}</span>
+                                </>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 mt-1 text-[11px]">
+                              <span className="font-black text-green-600 dark:text-green-400">
+                                {formatCurrency(prod.finalPrice)}
+                              </span>
+                              <span className={cn(
+                                "text-[9px] font-bold px-1.5 py-0.2 rounded uppercase",
+                                prod.stock > 0 ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" : "bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400"
+                              )}>
+                                Estoque: {prod.stock || 0}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => handleReplaceProduct(replacingItem.clientIdx, replacingItem.itemIdx, prod)}
+                          className="px-4 py-2 bg-[#FF6B00] hover:bg-orange-600 text-white rounded-xl text-xs font-black uppercase shadow-sm transition-all shrink-0 active:scale-95 flex items-center gap-1 cursor-pointer"
+                        >
+                          <CheckCircle2 size={14} /> Selecionar
+                        </button>
+                      </div>
+                    ))
+                  )}
                 </div>
               </motion.div>
             </div>

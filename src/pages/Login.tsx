@@ -11,7 +11,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
-  if (profile) {
+  if (profile && !profile.uid.startsWith('guest_')) {
     if (profile.role === 'cliente') {
       return <Navigate to="/catalog" replace />;
     }
@@ -109,6 +109,15 @@ export default function Login() {
               'Entrar'
             )}
           </button>
+
+          <div className="text-center pt-2">
+            <a 
+              href="/catalog" 
+              className="text-xs text-brand-orange hover:text-brand-orange-light font-bold hover:underline transition-all"
+            >
+              Ou ver catálogo de produtos diretamente &rarr;
+            </a>
+          </div>
         </form>
 
         <div className="mt-8 text-center text-[10px] text-slate-400 font-mono">

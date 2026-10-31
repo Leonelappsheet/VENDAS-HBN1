@@ -152,29 +152,54 @@ function normalizeEAN(ean) {
  */
 function cleanNumericString(val) {
   if (val === null || val === undefined) return "0";
-  if (typeof val === 'number') return String(val);
+  if (typeof val === 'number') return isNaN(val) ? "0" : String(val);
   
-  var s = String(val).replace('R$', '').replace('%', '').trim();
+  var s = String(val).trim();
   if (!s) return "0";
 
-  if (s.indexOf('.') !== -1 && s.indexOf(',') !== -1) {
-    return s.replace(/\./g, '').replace(',', '.');
-  }
-  
-  if (s.indexOf(',') !== -1) {
-    return s.replace(',', '.');
+  s = s.replace(/R\$/gi, '')
+       .replace(/\$/g, '')
+       .replace(/€/g, '')
+       .replace(/%/g, '')
+       .replace(/["']/g, '')
+       .replace(/\u00A0/g, ' ')
+       .trim();
+
+  if (!s) return "0";
+
+  var hasComma = s.indexOf(',') !== -1;
+  var hasDot = s.indexOf('.') !== -1;
+
+  if (hasComma && hasDot) {
+    var lastComma = s.lastIndexOf(',');
+    var lastDot = s.lastIndexOf('.');
+    if (lastComma > lastDot) {
+      s = s.replace(/\./g, '').replace(',', '.');
+    } else {
+      s = s.replace(/,/g, '');
+    }
+  } else if (hasComma) {
+    var commaParts = s.split(',');
+    if (commaParts.length === 2 && commaParts[1].length === 3) {
+      s = s.replace(',', '');
+    } else {
+      s = s.replace(',', '.');
+    }
+  } else if (hasDot) {
+    var dotCount = (s.match(/\./g) || []).length;
+    if (dotCount > 1) {
+      s = s.replace(/\./g, '');
+    } else if (dotCount === 1) {
+      var parts = s.split('.');
+      if (parts[1] && parts[1].length === 3) {
+        s = s.replace('.', '');
+      }
+    }
   }
 
-  var dotCount = (s.match(/\./g) || []).length;
-  if (dotCount === 1) {
-    return s;
-  }
-  
-  if (dotCount > 1) {
-    return s.replace(/\./g, '');
-  }
-  
-  return s;
+  s = s.replace(/[^\d.-]/g, '');
+
+  return s || "0";
 }
 
 /**
@@ -914,10 +939,16 @@ function saveCart(spreadsheetId, clientId, items) {
 
     var values = sheet.getDataRange().getValues();
     var cartId = "CARRINHO_" + clientId;
+    var rawClientId = String(clientId || "").trim().toLowerCase();
+    var cleanClientId = rawClientId.replace(/\D/g, "");
 
     // Remove existing rows for this client's cart
     for (var i = values.length - 1; i >= 1; i--) {
-      if (String(values[i][1] || "").trim() === cartId) {
+      var rowCartId = String(values[i][1] || "").trim().toLowerCase();
+      var match = (rowCartId === ("carrinho_" + rawClientId)) ||
+                  (rawClientId.length > 0 && rowCartId.indexOf(rawClientId) !== -1) ||
+                  (cleanClientId.length >= 6 && rowCartId.indexOf(cleanClientId) !== -1);
+      if (match) {
         sheet.deleteRow(i + 1);
       }
     }
